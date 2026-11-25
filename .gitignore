@@ -1,0 +1,40 @@
+# 本地索引与缓存（含完整本地路径，绝对不要提交）
+00_索引/
+**/library.db
+**/library.db-wal
+**/library.db-shm
+**/缩略图/
+**/预览缓存/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+_工具/py/
+_工具/py*/
+
+# PyInstaller
+build/
+dist/
+_build/
+_build*/
+*.spec
+媒体库.exe
+*.zip
+*.7z
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 本地配置（只提交 .example）
+扫描范围.txt
+跳过目录.txt
+
+# 临时输出
+_gh.*

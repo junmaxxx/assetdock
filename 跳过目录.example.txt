@@ -1,0 +1,11 @@
+# 跳过目录：一行一个关键词，路径里含这个词的整棵目录都不扫
+# 复制本文件为「跳过目录.txt」再修改
+\windows
+\program files
+\program files (x86)
+\appdata\
+\node_modules\
+\__pycache__\
+\cache\
+\wechat files\
+\tencent files\

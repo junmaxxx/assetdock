@@ -141,11 +141,10 @@
     border-radius:12px;padding:9px 12px;box-shadow:0 18px 48px rgba(0,0,0,.55);color:#dfe5f2}
   #batchbar.on{display:flex}
   #batchbar b{font-size:12.5px;color:#cfd6e6;margin-right:4px}
+  #batchbar .hint{font-size:11.5px;color:#8b93a7;margin-right:2px}
   #batchbar button{padding:6px 13px;border-radius:8px;font-size:12px;cursor:pointer;
     background:rgba(26,31,43,.9);border:1px solid rgba(60,70,92,.8);color:#dfe5f2}
-  #batchbar #bdel{background:rgba(120,30,36,.9);border-color:rgba(255,110,110,.45);color:#ffdede}
-  #batchbar #bdel:hover{background:rgba(150,36,44,.98)}
-  #batchbar #bdel:disabled{opacity:.45;cursor:not-allowed}
+  #batchbar #bclear{color:#cfd6e6}
   #vw{position:fixed;inset:0;background:#07090d;display:none;z-index:70;flex-direction:column}
   #vw.on{display:flex}
   .vtop{height:54px;flex:0 0 54px;display:flex;align-items:center;gap:14px;padding:0 16px;
@@ -290,13 +289,13 @@
   <span>单击选中 · 双击打开 · 右键更多操作</span>
   <span>Ctrl+滚轮 缩放界面</span>
   <span>后台每 15 分钟自动补扫，新素材自动出现</span>
-  <span style="margin-left:auto;color:#3f4657">素材坞 v1.4 · 本地运行</span>
+  <span style="margin-left:auto;color:#3f4657">素材坞 v1.5 · 本地运行</span>
 </footer>
 
 <div id="batchbar">
   <b id="bcount">已选 0 项</b>
-  <button id="bdel">删除选中</button>
-  <button id="bclear">取消</button>
+  <span class="hint">右键任一选中项 → 删除</span>
+  <button id="bclear">退出多选</button>
 </div>
 
 <div id="zctl">
@@ -508,19 +507,21 @@ document.getElementById('reset').addEventListener('click', () => {
 document.getElementById('selmode').addEventListener('click', () => {
   batchMode = !batchMode;
   if (!batchMode) selSet.clear();
+  else toast('多选已开启：单击卡片选择，右键选中项才能删除');
   paintSel();
 });
 document.getElementById('bclear').addEventListener('click', () => {
   selSet.clear(); batchMode = false; paintSel();
 });
-document.getElementById('bdel').addEventListener('click', async () => {
+let deletingSel = false;
+async function deleteSelected(){
   const ids = [...selSet];
-  if (!ids.length) return;
-  const ok = await opDialog('删除选中文件',
-    '将 ' + ids.length + ' 个文件移到回收站，索引里的记录会一起移除。',
-    null, '删除', true);
+  if (!ids.length || deletingSel) return;
+  const ok = await opDialog('删除选中的 ' + ids.length + ' 个文件',
+    '这些文件会移到系统回收站，索引记录一起移除。这个操作只能从回收站还原，确认删除？',
+    null, '移到回收站', true);
   if (!ok) return;
-  document.getElementById('bdel').disabled = true;
+  deletingSel = true;
   try {
     const r = await fetch('/api/batchdelete?ids=' + ids.join(','), {method:'POST'}).then(x => x.json());
     if (r.ok) {
@@ -530,13 +531,13 @@ document.getElementById('bdel').addEventListener('click', async () => {
       if (S.view === 'grid') resetAndLoad(); else showAlbums();
     } else {
       toast(r.msg || '删除失败');
-      document.getElementById('bdel').disabled = false;
     }
   } catch (e) {
     toast('删除失败：' + e.message);
-    document.getElementById('bdel').disabled = false;
+  } finally {
+    deletingSel = false;
   }
-});
+}
 let qt;
 document.getElementById('q').addEventListener('input', e => {
   clearTimeout(qt); qt = setTimeout(() => {
@@ -646,7 +647,7 @@ function paintSel(){
   const bar = document.getElementById('batchbar');
   bar.classList.toggle('on', n > 0);
   document.getElementById('bcount').textContent = '已选 ' + n + ' 项';
-  document.getElementById('bdel').disabled = n === 0;
+  document.getElementById('bclear').textContent = '退出多选';
   const sm = document.getElementById('selmode');
   sm.textContent = batchMode ? '退出批量' : '批量选择';
   sm.classList.toggle('act', batchMode);
@@ -687,8 +688,10 @@ grid.addEventListener('dblclick', e => {
 });
 grid.addEventListener('contextmenu', e => {
   const c = e.target.closest('.card'); if (!c) return;
-  if (batchMode) return;
-  e.preventDefault(); setSel(+c.dataset.id); showCtx(+c.dataset.id, e.clientX, e.clientY);
+  e.preventDefault();
+  const id = +c.dataset.id;
+  if (batchMode) { showBatchCtx(id, e.clientX, e.clientY); return; }
+  setSel(id); showCtx(id, e.clientX, e.clientY);
 });
 
 function openItem(id){
@@ -1011,6 +1014,30 @@ function showCtx(id, x, y){
     ['复制文件名', '', () => copyText(it.name, '已复制文件名')],
     ['-'],
     ['属性信息', '', () => toast(it.name + ' · ' + (it.w ? it.w+'×'+it.h : '尺寸未知') + ' · ' + kb(it.size) + ' · ' + it.ext)],
+    ['-'],
+    ['多选（批量删除）…', '右键进入多选', () => { batchMode = true; selSet.clear(); selSet.add(id); lastPick = id; paintSel(); toast('多选已开启：点其他卡片继续选，右键选中项可删除'); }],
+  ];
+  ctx.innerHTML = rows.map((r, i) => r[0] === '-'
+    ? '<hr>'
+    : '<div class="ci' + (r[3] === 'danger' ? ' danger' : '') + '" data-i="' + i + '"><span>' + esc(r[0]) + '</span>' + (r[1] ? '<em>' + esc(r[1]) + '</em>' : '') + '</div>').join('');
+  ctx.dataset.id = id;
+  ctx.classList.add('on');
+  ctx.style.left = '0px'; ctx.style.top = '0px';
+  const w = ctx.offsetWidth, h = ctx.offsetHeight;
+  ctx.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
+  ctx.style.top = Math.min(y, window.innerHeight - h - 8) + 'px';
+  ctx._rows = rows;
+}
+function showBatchCtx(id, x, y){
+  const n = selSet.size;
+  const picked = selSet.has(id);
+  const rows = picked ? [
+    ['删除选中的 ' + n + ' 项', '移到回收站（需确认）', deleteSelected, 'danger'],
+    ['取消选中该项', '', () => { selSet.delete(id); paintSel(); }],
+    ['退出多选', '', () => { batchMode = false; selSet.clear(); paintSel(); }],
+  ] : [
+    ['选中该项', '再右键它才能删除', () => { selSet.add(id); lastPick = id; paintSel(); }],
+    ['退出多选', '', () => { batchMode = false; selSet.clear(); paintSel(); }],
   ];
   ctx.innerHTML = rows.map((r, i) => r[0] === '-'
     ? '<hr>'
@@ -1104,3 +1131,4 @@ function zStep(d){ zApply(Z.cur + d, true); }
 </script>
 </body>
 </html>
+

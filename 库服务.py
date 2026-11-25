@@ -32,6 +32,7 @@ IDX = os.path.join(BASE, '00_索引')
 DB = os.path.join(IDX, 'library.db')
 THUMB_DIR = os.path.join(IDX, '缩略图')
 PREVIEW_DIR = os.path.join(IDX, '预览缓存')
+PLAY_DIR = os.path.join(IDX, '播放缓存')
 TOOLS = os.path.join(BASE, '_工具')
 APP_HTML = os.path.join(TOOLS, 'app.html')
 
@@ -51,6 +52,8 @@ IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tif', '.tiff', 
              '.heif', '.avif', '.psd', '.ico', '.jxl'}
 VIDEO_EXT = {'.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v', '.flv', '.wmv', '.mpg', '.mpeg', '.ts'}
 AUDIO_EXT = {'.mp3', '.wav', '.m4a', '.ogg', '.flac', '.aac', '.wma', '.opus'}
+# 浏览器内核能直接播的容器；其余（mov/mkv/avi/flv/wmv/mpg/ts）先转成 mp4
+DIRECT_VIDEO = {'.mp4', '.m4v', '.webm'}
 
 DEFAULT_SKIP = [
     '\\windows', '\\program files', '\\program files (x86)', '\\programdata',
@@ -606,6 +609,136 @@ def _filter(p):
     return (('WHERE ' + ' AND '.join(where)) if where else ''), args
 
 
+# ---------------- 视频转码（浏览器不支持的容器） ----------------
+PLAY_JOBS = {}
+PLAY_LOCK = threading.Lock()
+_VID_OK = ('h264', 'vp8', 'vp9', 'av1')
+
+
+def _ffmpeg_exe():
+    import imageio_ffmpeg
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
+def _probe_video(path):
+    """用 ffmpeg -i 读时长和视频编码；失败返回 (0, '')"""
+    try:
+        flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        p = subprocess.run([_ffmpeg_exe(), '-hide_banner', '-i', path],
+                           capture_output=True, timeout=20, creationflags=flags,
+                           stdin=subprocess.DEVNULL)
+        txt = (p.stderr or b'').decode('utf-8', 'replace')
+        dur = 0.0
+        m = re.search(r'Duration: (\d+):(\d+):(\d+(?:\.\d+)?)', txt)
+        if m:
+            dur = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+        vc = ''
+        m = re.search(r'Stream #.*?Video: ([A-Za-z0-9_]+)', txt)
+        if m:
+            vc = m.group(1).lower()
+        return dur, vc
+    except Exception:
+        return 0.0, ''
+
+
+def play_cache_path(item_id, mtime):
+    return os.path.join(PLAY_DIR, '%d_%d.mp4' % (item_id, mtime))
+
+
+def _clean_play_cache():
+    """播放缓存超过 30 天就删（只删缓存，不动原文件）"""
+    try:
+        now = time.time()
+        for f in os.listdir(PLAY_DIR):
+            p = os.path.join(PLAY_DIR, f)
+            if os.path.isfile(p) and now - os.path.getmtime(p) > 86400 * 30:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
+def _run_transcode(item_id, src, out, dur):
+    job = PLAY_JOBS.get(item_id)
+    tmp = out + '.part.mp4'
+    try:
+        os.makedirs(PLAY_DIR, exist_ok=True)
+        flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        cmd = [_ffmpeg_exe(), '-y', '-hide_banner', '-loglevel', 'error',
+               '-i', src, '-map', '0:v:0', '-map', '0:a:0?',
+               '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
+               '-vf', 'scale=min(1920\\,iw):min(1920\\,ih):force_original_aspect_ratio=decrease:force_divisible_by=2',
+               '-pix_fmt', 'yuv420p',
+               '-c:a', 'aac', '-b:a', '128k', '-ac', '2',
+               '-movflags', '+faststart', '-progress', 'pipe:1', '-nostats', tmp]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, text=True, bufsize=1,
+                                encoding='utf-8', errors='replace', creationflags=flags)
+        tail = []
+        for line in proc.stdout:
+            line = line.strip()
+            if line.startswith('out_time_ms='):
+                try:
+                    sec = int(line.split('=', 1)[1]) / 1e6
+                    if dur > 0 and job is not None:
+                        job['pct'] = max(job.get('pct', 0), max(0, min(99, int(sec / dur * 100))))
+                except ValueError:
+                    pass
+            elif line:
+                tail.append(line)
+                tail = tail[-5:]
+        code = proc.wait()
+        if code == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 1024:
+            os.replace(tmp, out)
+            if job is not None:
+                job['pct'] = 100
+                job['state'] = 'ready'
+                job['msg'] = '已转好'
+        else:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            if job is not None:
+                job['state'] = 'error'
+                job['msg'] = '转码失败：' + (' / '.join(tail)[-160:] or '视频可能损坏')
+    except Exception as e:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        if job is not None:
+            job['state'] = 'error'
+            job['msg'] = '转码失败：' + str(e)[:160]
+
+
+def play_state(item_id, path, mtime, ext):
+    """返回 {'mode': direct/ready/transcoding/error, 'url','pct','msg'}"""
+    if ext in DIRECT_VIDEO:
+        _dur, vc = _probe_video(path)
+        if (not vc) or vc in _VID_OK:
+            return {'mode': 'direct', 'url': '/file/%d' % item_id}
+    out = play_cache_path(item_id, mtime)
+    if os.path.exists(out) and os.path.getsize(out) > 1024:
+        return {'mode': 'ready', 'url': '/play/%d' % item_id}
+    job = PLAY_JOBS.get(item_id)
+    if job is None:
+        dur, _vc = _probe_video(path)
+        _clean_play_cache()
+        job = {'state': 'running', 'pct': 0, 'msg': '正在转码', 't0': time.time()}
+        PLAY_JOBS[item_id] = job
+        threading.Thread(target=_run_transcode, args=(item_id, path, out, dur),
+                         daemon=True).start()
+    if job.get('state') == 'error':
+        return {'mode': 'error', 'msg': job.get('msg') or '转码失败'}
+    if job.get('state') == 'ready':
+        return {'mode': 'ready', 'url': '/play/%d' % item_id}
+    return {'mode': 'transcoding', 'pct': job.get('pct', 0), 'msg': job.get('msg', '正在转码')}
+
+
 # ---------------- HTTP ----------------
 class Handler(BaseHTTPRequestHandler):
     server_version = 'MediaLib'
@@ -680,6 +813,16 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r'^/file/(\d+)$', p)
         if m:
             self.serve_file(int(m.group(1)))
+            return
+
+        m = re.match(r'^/play/(\d+)$', p)
+        if m:
+            self.serve_play(int(m.group(1)))
+            return
+
+        m = re.match(r'^/api/playprep/(\d+)$', p)
+        if m:
+            self.api_playprep(int(m.group(1)))
             return
 
         m = re.match(r'^/api/open/(\d+)$', p)
@@ -906,6 +1049,76 @@ class Handler(BaseHTTPRequestHandler):
                     left -= len(chunk)
         except (BrokenPipeError, ConnectionAbortedError):
             pass
+
+    def _send_path(self, path, ctype):
+        """按 Range 把一个本地文件发给浏览器"""
+        size = os.path.getsize(path)
+        rng = self.headers.get('Range')
+        start, end = 0, size - 1
+        if rng and rng.startswith('bytes='):
+            m = re.match(r'bytes=(\d*)-(\d*)', rng)
+            if m:
+                if m.group(1):
+                    start = int(m.group(1))
+                if m.group(2):
+                    end = min(int(m.group(2)), size - 1)
+                if start > end:
+                    start, end = 0, size - 1
+        length = end - start + 1
+        code = 206 if rng else 200
+        self.send_response(code)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Accept-Ranges', 'bytes')
+        self.send_header('Content-Length', str(length))
+        if rng:
+            self.send_header('Content-Range', 'bytes %d-%d/%d' % (start, end, size))
+        self.end_headers()
+        if self.command == 'HEAD':
+            return
+        try:
+            with open(path, 'rb') as f:
+                f.seek(start)
+                left = length
+                while left > 0:
+                    chunk = f.read(min(262144, left))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    left -= len(chunk)
+        except (BrokenPipeError, ConnectionAbortedError):
+            pass
+
+    def serve_play(self, item_id):
+        con = connect()
+        row = con.execute('SELECT mtime, ext FROM items WHERE id=?', (item_id,)).fetchone()
+        con.close()
+        if not row:
+            self._send(404, '', 'text/plain')
+            return
+        mtime, ext = row
+        out = play_cache_path(item_id, mtime)
+        if not os.path.exists(out):
+            self._send(404, '还没转好，先刷新一下', 'text/plain; charset=utf-8')
+            return
+        self._send_path(out, 'video/mp4')
+
+    def api_playprep(self, item_id):
+        con = connect()
+        row = con.execute('SELECT path, ext, mtime FROM items WHERE id=?', (item_id,)).fetchone()
+        con.close()
+        if not row:
+            self._json({'ok': False, 'mode': 'error', 'msg': '没有这条记录'}, 404)
+            return
+        path, ext, mtime = row
+        if not os.path.exists(path):
+            self._json({'ok': False, 'mode': 'error', 'msg': '文件已不在原位'})
+            return
+        try:
+            st = play_state(item_id, path, mtime, ext)
+            st['ok'] = st.get('mode') != 'error'
+            self._json(st)
+        except Exception as e:
+            self._json({'ok': False, 'mode': 'error', 'msg': '准备播放失败：' + str(e)[:120]})
 
     def api_open(self, item_id, mode):
         con = connect()

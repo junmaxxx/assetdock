@@ -196,6 +196,13 @@
   .media.aud{flex:0 0 auto;width:min(680px,92%);padding:22px 18px;background:rgba(20,24,33,.9);
     border:1px solid rgba(255,255,255,.08);box-shadow:0 24px 60px rgba(0,0,0,.5)}
   #lb img,#lb video{max-width:100%;max-height:100%;object-fit:contain;display:block;border-radius:16px}
+  .tcip{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
+    color:#aab3c8;font-size:13px;text-align:center;padding:30px;width:100%;height:100%}
+  .tcip .spin{width:28px;height:28px;border-radius:50%;border:2px solid rgba(120,130,160,.28);
+    border-top-color:#8b7dff;animation:sp 1s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .tcip .tp{font-size:20px;color:#e6ebf7;font-weight:600}
+  .tcip .tm{max-width:560px;line-height:1.85;color:#98a1b6}
   #lb audio{width:100%}
   .lbinfo{font-size:12px;color:#cfd5e3;text-align:center;max-width:92%;line-height:1.9}
   .lbinfo b{font-size:14px}
@@ -573,22 +580,78 @@ function openItem(id){
 
 /* ---------- 视频 / 音频播放 ---------- */
 const lb = document.getElementById('lb');
+let playSeq = 0;
+
 function openPlayer(id){
   const it = itemOf(id); if (!it) return;
   curId = id;
+  const seq = ++playSeq;
   const media = document.getElementById('lbmedia');
   media.classList.toggle('aud', it.media !== '视频');
-  media.innerHTML = it.media === '视频'
-    ? '<video controls autoplay src="/file/'+id+'"></video>'
-    : '<audio controls autoplay src="/file/'+id+'"></audio>';
-  const mv = media.querySelector('video,audio');
-  if (mv) { try { const pr = mv.play(); if (pr && pr.catch) pr.catch(()=>{}); } catch(e) {} }
   document.getElementById('lbinfo').innerHTML =
     '<b>'+esc(it.name)+'</b><div class="m">'+esc(it.cat)+(it.sub? ' · '+esc(it.sub):'')+' · '+kb(it.size)+'</div>'+
     '<div class="m">'+esc(it.path)+'</div>';
   lb.classList.add('on');
+  if (it.media === '视频') {
+    media.innerHTML = '<div class="tcip"><div class="spin"></div><div class="tp">正在准备播放…</div><div class="tm"></div></div>';
+    prepVideo(id, seq);
+  } else {
+    media.innerHTML = '<audio controls autoplay src="/file/'+id+'"></audio>';
+    const mv = media.querySelector('audio');
+    if (mv) { try { const pr = mv.play(); if (pr && pr.catch) pr.catch(()=>{}); } catch(e) {} }
+  }
 }
-function closeLb(){ lb.classList.remove('on'); document.getElementById('lbmedia').innerHTML=''; }
+
+function attachVideo(id, seq, url){
+  if (seq !== playSeq) return;
+  const media = document.getElementById('lbmedia');
+  media.innerHTML = '<video controls autoplay src="'+url+'"></video>';
+  const mv = media.querySelector('video');
+  if (mv) { try { const pr = mv.play(); if (pr && pr.catch) pr.catch(()=>{}); } catch(e) {} }
+}
+
+function tpText(title, msg, withOpen, id, seq){
+  if (seq !== playSeq) return;
+  const box = document.querySelector('#lbmedia .tcip'); if (!box) return;
+  box.innerHTML = '<div class="spin"></div><div class="tp">'+esc(title)+'</div><div class="tm">'+msg+'</div>'+
+    (withOpen ? '<div class="lbact"><button id="tpopen">用系统程序打开</button></div>' : '');
+  const b = document.getElementById('tpopen');
+  if (b) b.onclick = () => act('open', id);
+}
+
+async function prepVideo(id, seq){
+  let r;
+  try {
+    r = await fetch('/api/playprep/'+id, {method:'POST'}).then(x => x.json());
+  } catch(e) {
+    tpText('无法准备播放', '本地服务没有响应。', true, id, seq);
+    return;
+  }
+  if (seq !== playSeq) return;
+  if (r.mode === 'direct' || r.mode === 'ready') { attachVideo(id, seq, r.url); return; }
+  if (r.mode === 'error') { tpText('这个视频打不开', esc(r.msg || '转码失败')+'<br>可以先用系统播放器看。', true, id, seq); return; }
+  pollVideo(id, seq, r);
+}
+
+async function pollVideo(id, seq, first){
+  let r = first || {};
+  while (seq === playSeq && r.mode === 'transcoding') {
+    const pct = r.pct || 0;
+    tpText('正在转成 MP4… ' + pct + '%',
+      '这个格式浏览器内核不能直接播，第一次打开会转一份缓存，之后秒开。<br>窗口可以先别关，转完会自动开始。',
+      false, id, seq);
+    await new Promise(res => setTimeout(res, 700));
+    if (seq !== playSeq) return;
+    try { r = await fetch('/api/playprep/'+id, {method:'POST'}).then(x => x.json()); }
+    catch(e) { tpText('无法准备播放', '本地服务没有响应。', true, id, seq); return; }
+    if (seq !== playSeq) return;
+  }
+  if (seq !== playSeq) return;
+  if (r.mode === 'ready') attachVideo(id, seq, r.url);
+  else if (r.mode === 'direct') attachVideo(id, seq, r.url);
+  else if (r.mode === 'error') tpText('这个视频打不开', esc(r.msg || '转码失败')+'<br>可以先用系统播放器看。', true, id, seq);
+}
+function closeLb(){ playSeq++; lb.classList.remove('on'); document.getElementById('lbmedia').innerHTML=''; }
 document.getElementById('lbclose').onclick = closeLb;
 lb.addEventListener('click', e => { if (e.target.id === 'lb') closeLb(); });
 

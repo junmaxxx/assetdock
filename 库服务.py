@@ -52,6 +52,7 @@ IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tif', '.tiff', 
              '.heif', '.avif', '.psd', '.ico', '.jxl'}
 VIDEO_EXT = {'.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v', '.flv', '.wmv', '.mpg', '.mpeg', '.ts'}
 AUDIO_EXT = {'.mp3', '.wav', '.m4a', '.ogg', '.flac', '.aac', '.wma', '.opus'}
+DOC_EXT = {'.pdf', '.ppt', '.pptx'}
 # 浏览器内核能直接播的容器；其余（mov/mkv/avi/flv/wmv/mpg/ts）先转成 mp4
 DIRECT_VIDEO = {'.mp4', '.m4v', '.webm'}
 
@@ -110,7 +111,7 @@ CAT_RULES = [
                   '\\画册', '\\sku', '\\平面素材', '\\产品图')),
     ('品牌宣传', ('\\官网', '\\宣传', '\\公众号', '\\推广', '\\banner', '\\海报素材',
                   '\\朋友圈', '\\推文')),
-    ('茶饮工作', ('\\品牌素材\\', '\\烘焙素材\\', '\\茶饮',
+    ('茶饮工作', ('\\品牌素材\\', '\\烘焙素材\\', '\\茶饮', '\\品牌素材\\', '\\品牌素材\\',
                   '\\产品应用', '\\配方')),
     ('电商视频', ('\\电商视频\\', '\\视频成片\\', '\\成片\\')),
     ('截图', ('\\截图\\', '\\screenshots\\', '\\screen shot', '\\screenshot', '\\验收截图')),
@@ -132,6 +133,8 @@ def media_of(ext):
         return '视频'
     if e in AUDIO_EXT:
         return '音频'
+    if e in DOC_EXT:
+        return '文档'
     return None
 
 
@@ -143,6 +146,8 @@ def guess_cat(path, media):
                 return cat
     if media == '视频':
         return '视频'
+    if media == '文档':
+        return '文档'
     return '其他'
 
 
@@ -400,6 +405,8 @@ def do_scan(full=False):
                            if not any(s.strip('\\') == d.lower() for s in skip)
                            and not any(s in (low + d.lower() + '\\') for s in skip)]
             for fn in filenames:
+                if fn.startswith('~$') or fn.startswith('._'):
+                    continue  # Office 临时锁文件 / macOS 资源叉，不是真文档
                 ext = os.path.splitext(fn)[1]
                 media = media_of(ext)
                 if not media:
@@ -514,11 +521,99 @@ def placeholder_thumb(kind, ext):
     return out
 
 
+def _ui_font(size, bold=False):
+    from PIL import ImageFont
+    for p in (('C:/Windows/Fonts/msyhbd.ttc' if bold else 'C:/Windows/Fonts/msyh.ttc'),
+              'C:/Windows/Fonts/msyhbd.ttc', 'C:/Windows/Fonts/arialbd.ttf'):
+        try:
+            return ImageFont.truetype(p, size)
+        except Exception:
+            pass
+    return ImageFont.load_default()
+
+
+def _doc_placeholder(out, ext, title):
+    from PIL import Image, ImageDraw
+    im = Image.new('RGB', (480, 300), (22, 26, 35))
+    d = ImageDraw.Draw(im)
+    d.rectangle([0, 0, 480, 7], fill=(139, 125, 255))
+    label = (ext or '').lstrip('.').upper() or 'DOC'
+    d.rounded_rectangle([30, 36, 116, 84], 8, fill=(44, 50, 68))
+    d.text((44, 48), label, font=_ui_font(24, True), fill=(210, 216, 232))
+    t = title or ('PDF 文档' if label == 'PDF' else '演示文稿')
+    lines, buf = [], ''
+    for ch in t:
+        if d.textlength(buf + ch, font=_ui_font(26, True)) > 400:
+            lines.append(buf); buf = ch
+            if len(lines) >= 2: break
+        else:
+            buf += ch
+    if buf and len(lines) < 2:
+        lines.append(buf)
+    y = 130
+    for line in lines:
+        d.text((30, y), line, font=_ui_font(26, True), fill=(232, 236, 246))
+        y += 38
+    d.line([30, 236, 450, 236], fill=(56, 64, 84), width=1)
+    d.text((30, 252), '封面预览', font=_ui_font(15), fill=(120, 130, 152))
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    im.save(out, 'WEBP', quality=82, method=2)
+    return out
+
+
+def doc_cover(item_id, path, mtime, ext, out):
+    """PDF / PPTX 取第一页或第一张图当封面；老 .ppt 只能出占位封面"""
+    try:
+        from PIL import Image
+        if ext == '.pdf':
+            import pypdfium2 as pdfium
+            pdf = pdfium.PdfDocument(path)
+            page = pdf[0]
+            w, _h = page.get_size()
+            scale = max(1.0, 480.0 / max(1, w))
+            im = page.render(scale=scale).to_pil().convert('RGB')
+            im.thumbnail((480, 640), Image.LANCZOS)
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            im.save(out, 'WEBP', quality=82, method=2)
+            return out
+        if ext == '.pptx':
+            import io
+            from pptx import Presentation
+            prs = Presentation(path)
+            slide = prs.slides[0]
+            best = None
+            for sh in slide.shapes:
+                try:
+                    if getattr(sh, 'shape_type', None) == 13 or hasattr(sh, 'image'):
+                        blob = sh.image.blob
+                        im = Image.open(io.BytesIO(blob)).convert('RGB')
+                        if best is None or im.width * im.height > best.width * best.height:
+                            best = im
+                except Exception:
+                    continue
+            if best is not None:
+                best.thumbnail((480, 640), Image.LANCZOS)
+                os.makedirs(os.path.dirname(out), exist_ok=True)
+                best.save(out, 'WEBP', quality=82, method=2)
+                return out
+            title = ''
+            try:
+                title = (slide.shapes.title.text_frame.text or '').strip()
+            except Exception:
+                pass
+            return _doc_placeholder(out, ext, title or os.path.splitext(os.path.basename(path))[0])
+    except Exception:
+        pass
+    return _doc_placeholder(out, ext, os.path.splitext(os.path.basename(path))[0])
+
+
 def thumb_for(item_id, path, mtime, media='图片', ext=''):
     key = '%d_%d.webp' % (item_id, mtime)
     out = os.path.join(THUMB_DIR, key[:2], key)
     if os.path.exists(out):
         return out
+    if media == '文档':
+        return doc_cover(item_id, path, mtime, ext, out)
     if media == '视频':
         try:
             import imageio_ffmpeg, subprocess, tempfile
@@ -593,6 +688,8 @@ def _filter(p):
         where.append('cat=?'); args.append(p['cat'])
     if p.get('loc') and p['loc'] != '全部':
         where.append('loc=?'); args.append(p['loc'])
+    if p.get('disk'):
+        where.append('path LIKE ?'); args.append(p['disk'] + '%')
     if p.get('sub'):
         where.append('sub=?'); args.append(p['sub'])
     if p.get('q'):
@@ -784,7 +881,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if p == '/api/facets':
-            self.api_facets()
+            self.api_facets(q)
             return
 
         if p == '/api/items':
@@ -835,6 +932,10 @@ class Handler(BaseHTTPRequestHandler):
             self.api_open(int(m.group(1)), 'reveal')
             return
 
+        if p == '/api/batchdelete':
+            api_batch_delete(self, (q.get('ids') or [''])[0])
+            return
+
         m = re.match(r'^/api/delete/(\d+)$', p)
         if m:
             api_delete(self, int(m.group(1)))
@@ -864,7 +965,10 @@ class Handler(BaseHTTPRequestHandler):
         # 打开/定位这类动作走 POST，复用 GET 的分发
         self.do_GET()
 
-    def api_facets(self):
+    def api_facets(self, q=None):
+        def gv(k, d=''):
+            return ((q or {}).get(k) or [d])[0]
+        t = gv('type', '')
         con = connect()
         total = con.execute('SELECT COUNT(*) FROM items').fetchone()[0]
         media = dict(con.execute('SELECT media, COUNT(*) FROM items GROUP BY media').fetchall())
@@ -872,10 +976,17 @@ class Handler(BaseHTTPRequestHandler):
         locs = con.execute('SELECT loc, COUNT(*) c FROM items GROUP BY loc ORDER BY c DESC LIMIT 60').fetchall()
         subs = con.execute("SELECT cat, sub, COUNT(*) c FROM items WHERE sub<>'' "
                            "GROUP BY cat, sub ORDER BY c DESC LIMIT 80").fetchall()
+        if t and t != '全部':
+            disks = con.execute("SELECT substr(path,1,2) d, COUNT(*) c FROM items "
+                                "WHERE length(path)>3 AND media=? GROUP BY d ORDER BY d", (t,)).fetchall()
+        else:
+            disks = con.execute("SELECT substr(path,1,2) d, COUNT(*) c FROM items "
+                                "WHERE length(path)>3 GROUP BY d ORDER BY d").fetchall()
         con.close()
         self._json({'total': total, 'media': media,
                     'cats': [{'k': k, 'n': n} for k, n in cats],
                     'locs': [{'k': k, 'n': n} for k, n in locs],
+                    'disks': [{'k': k, 'n': n} for k, n in disks if k and k[0].isalpha() and k[1] == ':'],
                     'subs': [{'cat': c, 'k': s, 'n': n} for c, s, n in subs]})
 
     def api_items(self, q):
@@ -883,7 +994,8 @@ class Handler(BaseHTTPRequestHandler):
             return (q.get(k) or [d])[0]
 
         p = {'type': gv('type', '全部'), 'cat': gv('cat', '全部'), 'loc': gv('loc', '全部'),
-             'sub': gv('sub', ''), 'q': gv('q', '').strip(), 'ext': gv('ext', ''), 'recent': gv('recent', '')}
+             'sub': gv('sub', ''), 'q': gv('q', '').strip(), 'ext': gv('ext', ''), 'recent': gv('recent', ''),
+             'disk': gv('disk', '')}
         sort = gv('sort', 'time')
         try:
             offset = max(0, int(gv('offset', '0')))
@@ -1244,7 +1356,40 @@ def api_delete(self, item_id):
     self._json({'ok': True, 'msg': msg, 'name': name})
 
 
-def api_rename(self, item_id, new_name):
+def api_batch_delete(self, ids_s):
+    ids = []
+    for s in (ids_s or '').split(','):
+        s = s.strip()
+        if s.isdigit() and int(s) > 0 and int(s) not in ids:
+            ids.append(int(s))
+    if not ids:
+        self._json({'ok': False, 'msg': '没有选中任何文件'}, 400)
+        return
+    if len(ids) > 500:
+        self._json({'ok': False, 'msg': '一次最多删 500 个'}, 400)
+        return
+    con = connect()
+    deleted, failed = [], []
+    for item_id in ids:
+        row = con.execute('SELECT path, name FROM items WHERE id=?', (item_id,)).fetchone()
+        if not row:
+            failed.append({'id': item_id, 'msg': '没有这条记录'})
+            continue
+        path, name = row
+        if os.path.exists(path):
+            ok, msg = recycle_file(path)
+            if not ok:
+                failed.append({'id': item_id, 'name': name, 'msg': msg})
+                continue
+        con.execute('DELETE FROM items WHERE id=?', (item_id,))
+        con.commit()
+        deleted.append({'id': item_id, 'name': name})
+    con.close()
+    self._json({'ok': True, 'deleted': len(deleted), 'failed': failed,
+                'names': [d['name'] for d in deleted]})
+
+
+
     row = _row_path(item_id)
     if not row:
         self._json({'ok': False, 'msg': '没有这条记录'}, 404)

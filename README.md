@@ -1,6 +1,6 @@
 # 素材坞 · AssetDock
 
-一个本地媒体索引工具：把电脑上的图片、视频、音频扫成一份 SQLite 索引，用相册的方式浏览，双击就能放大看或在窗口里播放。
+一个本地素材索引工具：把电脑上的图片、视频、音频、PDF/PPT 扫成一份 SQLite 索引，用相册的方式浏览，双击就能放大看、在窗口里播放，或查看文档封面。
 
 **默认只读。** 媒体文件始终留在原来的文件夹里，程序只记录"在哪、多大、什么时候改的"，再生成一份缩略图缓存。只有你主动点右键里的复制 / 剪切 / 重命名 / 删除，才会操作真实文件；删除走回收站，可还原。
 
@@ -8,13 +8,15 @@
 
 ## 下载（Windows 免安装）
 
-到 [Releases · v1.3](../../releases/tag/v1.3) 下载 `assetdock-win64-v1.3.zip`（约 67 MB），解压到一个固定目录，双击 `素材坞.exe` 即可。不需要装 Python，首次启动会先扫盘并显示进度。
+到 [Releases · v1.4](../../releases/tag/v1.4) 下载 `assetdock-win64-v1.4.zip`（约 83 MB），解压到一个固定目录，双击 `素材坞.exe` 即可。不需要装 Python，首次启动会先扫盘并显示进度。
 
 ## 功能
 
-- **相册式首页**：最近 7 天 / 最近 30 天 / 全部 / 图片 / 视频 / 音频 / 动图，以及按来源自动分的相册
+- **相册式首页**：最近 7 天 / 最近 30 天 / 全部 / 图片 / 视频 / 音频 / 文档 / 动图，以及按来源自动分的相册
 - **两层分类**：先按大分类（游戏素材、产品物料、聊天图片、下载、截图…），再按项目内细分（背景、道具、动作帧、AI 生图…）；规则都在 `库服务.py` 的 `CAT_RULES` / `sub_of()` 里，可按自己的目录改
-- **筛选与搜索**：类型、分类、位置、细分叠加筛选，按文件名或完整路径搜索
+- **筛选与搜索**：类型、分类、位置、磁盘（C: / D: / E:…）、细分叠加筛选，按文件名或完整路径搜索
+- **批量选择与删除**：点「批量选择」后单击多选，Ctrl / Shift 连选；底部浮条显示已选数量，一次可把最多 500 个文件移进回收站（确认后执行，可还原）
+- **文档封面**：PDF 渲染首页；PPTX 取第一页里的图片；取不到图或老 `.ppt` 生成带文件名的占位封面。双击文档看大图封面，右键仍可用系统程序打开
 - **无限滚动**：按年月分段，每页 120 条，滚到底自动续
 - **内置图片查看器**：双击打开，滚轮缩放、拖动平移、适应窗口 / 1:1、上一张 / 下一张、键盘快捷键
 - **内置播放器**：视频、音频双击在窗口里播，进度条可拖动（服务端支持 HTTP Range）
@@ -34,6 +36,7 @@
 | 图片（服务端转码后显示） | tif / tiff / psd / heic / heif / jxl |
 | 视频 | mp4 / mov / mkv / webm / avi / m4v / flv / wmv / mpg / mpeg / ts（按首字节过滤 TypeScript 源码） |
 | 音频 | mp3 / wav / m4a / ogg / flac / aac / wma / opus |
+| 文档（封面预览） | pdf / pptx / ppt（老 .ppt 为占位封面，需系统 Office/WPS 才能取真封面） |
 
 超过 150 MB 的图片不做内嵌解码，会提示改用系统程序打开。
 
@@ -86,6 +89,7 @@ pyinstaller --noconfirm --clean --onedir --noconsole ^
   --icon icon.ico --name 素材坞 ^
   --add-data "app.html;." --add-data "icon.ico;." ^
   --collect-all webview --collect-all imageio_ffmpeg --collect-all pillow_heif ^
+  --collect-all pypdfium2 --collect-all pypdfium2_raw ^
   --collect-submodules pythonnet --hidden-import clr --hidden-import clr_loader --hidden-import cffi ^
   库服务.py
 ```
@@ -99,6 +103,7 @@ pyinstaller --noconfirm --clean --onedir --noconsole ^
 - 删除是移到回收站，不是永久删除；要彻底删请在回收站里清空
 - 首次全盘扫描耗时取决于磁盘文件量，之后都是增量
 - `psd` 只读合成图，不解析图层
+- PPTX 封面只取第一页里最大的图片；纯文字页、老 `.ppt` 会显示占位封面，不会调用 Office 渲染
 - 分类靠路径关键词，目录命名不规范时会落到「其他」
 
 ## License

@@ -100,7 +100,7 @@
   /* 照片墙 */
   .msec{margin-bottom:8px}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(164px,1fr));gap:12px}
-  .card{background:rgba(20,24,33,.6);border:1px solid rgba(49,58,76,.5);border-radius:14px;overflow:hidden;
+  .card{background:rgba(20,24,33,.6);border:1px solid rgba(49,58,76,.5);border-radius:14px;overflow:hidden;position:relative;
     cursor:pointer;transition:transform .18s,border-color .18s,box-shadow .18s}
   .card:hover{transform:translateY(-3px);border-color:rgba(139,108,255,.55);
     box-shadow:0 14px 30px rgba(0,0,0,.42)}
@@ -133,6 +133,19 @@
   /* 选中态 & 内置查看器 */
   .card.sel{outline:2px solid rgba(139,108,255,.75);outline-offset:-2px;border-radius:14px;
     box-shadow:0 0 0 3px rgba(139,108,255,.12)}
+  .card.chk::after{content:'✓';position:absolute;left:10px;top:10px;width:22px;height:22px;border-radius:50%;
+    background:#8b6cff;color:#fff;font-size:13px;line-height:22px;text-align:center;font-weight:700;
+    box-shadow:0 2px 8px rgba(0,0,0,.45);z-index:3}
+  #batchbar{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:46;display:none;
+    align-items:center;gap:10px;background:rgba(18,22,31,.96);border:1px solid rgba(70,80,105,.9);
+    border-radius:12px;padding:9px 12px;box-shadow:0 18px 48px rgba(0,0,0,.55);color:#dfe5f2}
+  #batchbar.on{display:flex}
+  #batchbar b{font-size:12.5px;color:#cfd6e6;margin-right:4px}
+  #batchbar button{padding:6px 13px;border-radius:8px;font-size:12px;cursor:pointer;
+    background:rgba(26,31,43,.9);border:1px solid rgba(60,70,92,.8);color:#dfe5f2}
+  #batchbar #bdel{background:rgba(120,30,36,.9);border-color:rgba(255,110,110,.45);color:#ffdede}
+  #batchbar #bdel:hover{background:rgba(150,36,44,.98)}
+  #batchbar #bdel:disabled{opacity:.45;cursor:not-allowed}
   #vw{position:fixed;inset:0;background:#07090d;display:none;z-index:70;flex-direction:column}
   #vw.on{display:flex}
   .vtop{height:54px;flex:0 0 54px;display:flex;align-items:center;gap:14px;padding:0 16px;
@@ -204,6 +217,8 @@
   .tcip .tp{font-size:20px;color:#e6ebf7;font-weight:600}
   .tcip .tm{max-width:560px;line-height:1.85;color:#98a1b6}
   #lb audio{width:100%}
+  #lbmedia.docw{width:min(900px,94vw);padding:14px 14px}
+  .doccov{max-width:100%;max-height:74vh;object-fit:contain;display:block;border-radius:12px}
   .lbinfo{font-size:12px;color:#cfd5e3;text-align:center;max-width:92%;line-height:1.9}
   .lbinfo b{font-size:14px}
   .lbinfo .m{color:var(--dim)}
@@ -251,9 +266,11 @@
       <option value="name">按名称</option>
       <option value="size">按大小</option>
     </select>
+    <button class="ghost" id="selmode">批量选择</button>
     <button class="ghost" id="reset">重置</button>
   </div>
   <div class="bar" id="chips"></div>
+  <div class="bar" id="diskchips" style="display:none"></div>
   <div class="bar subs" id="subchips" style="display:none"></div>
 </header>
 
@@ -273,8 +290,14 @@
   <span>单击选中 · 双击打开 · 右键更多操作</span>
   <span>Ctrl+滚轮 缩放界面</span>
   <span>后台每 15 分钟自动补扫，新素材自动出现</span>
-  <span style="margin-left:auto;color:#3f4657">素材坞 v1.3 · 本地运行</span>
+  <span style="margin-left:auto;color:#3f4657">素材坞 v1.4 · 本地运行</span>
 </footer>
+
+<div id="batchbar">
+  <b id="bcount">已选 0 项</b>
+  <button id="bdel">删除选中</button>
+  <button id="bclear">取消</button>
+</div>
 
 <div id="zctl">
   <button class="zb" id="zout" title="缩小">−</button>
@@ -333,7 +356,7 @@
 
 <script>
 const PAGE = 120;
-const S = {view:'albums', type:'全部', cat:'全部', loc:'全部', sub:'', ext:'', recent:'', q:'', sort:'time',
+const S = {view:'albums', type:'全部', cat:'全部', loc:'全部', disk:'', sub:'', ext:'', recent:'', q:'', sort:'time',
            offset:0, total:0, loading:false, end:false, seq:0, lastMonth:'', title:'全部素材', items:[]};
 let ALB = [];
 let SUBS = [];
@@ -345,14 +368,15 @@ const num = n => n.toLocaleString();
 function toast(m){ const t=document.getElementById('toast'); t.textContent=m; t.classList.add('on'); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('on'),1600); }
 
 async function loadFacets(){
-  const r = await fetch('/api/facets').then(r=>r.json());
+  const r = await fetch('/api/facets?type=' + encodeURIComponent(S.type)).then(r=>r.json());
   const m = r.media || {};
   document.getElementById('stats').innerHTML =
     '<span class="pill">全部<b>'+num(r.total)+'</b></span>' +
     '<span class="pill">图片<b>'+num(m['图片']||0)+'</b></span>' +
     '<span class="pill">视频<b>'+num(m['视频']||0)+'</b></span>' +
-    '<span class="pill">音频<b>'+num(m['音频']||0)+'</b></span>';
-  const types = ['全部','图片','视频','音频'];
+    '<span class="pill">音频<b>'+num(m['音频']||0)+'</b></span>' +
+    '<span class="pill">文档<b>'+num(m['文档']||0)+'</b></span>';
+  const types = ['全部','图片','视频','音频','文档'];
   let h = '<span class="lab">类型</span>' + types.map(t =>
     '<button class="chip'+(S.type===t?' on':'')+'" data-k="t" data-v="'+t+'">'+t+(m[t]?'<i>'+num(m[t])+'</i>':'')+'</button>').join('');
   h += '<span class="lab" style="margin-left:10px">分类</span>' +
@@ -360,10 +384,24 @@ async function loadFacets(){
     r.cats.map(c => '<button class="chip'+(S.cat===c.k?' on':'')+'" data-k="c" data-v="'+esc(c.k)+'">'+esc(c.k)+'<i>'+num(c.n)+'</i></button>').join('');
   document.getElementById('chips').innerHTML = h;
   SUBS = r.subs || [];
+  S.disks = r.disks || [];
+  renderDiskChips();
   renderSubchips();
   const sel = document.getElementById('locsel');
   if (sel) sel.innerHTML = '<option value="全部">全部位置</option>' + r.locs.map(l =>
     '<option value="'+esc(l.k)+'">'+esc(l.k)+' ('+num(l.n)+')</option>').join('');
+}
+
+/* 磁盘筛选：只影响浏览范围，不删任何文件 */
+function renderDiskChips(){
+  const box = document.getElementById('diskchips');
+  const list = S.disks || [];
+  if (list.length < 2) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = '';
+  box.innerHTML = '<span class="lab">磁盘</span>' +
+    '<button class="chip'+(S.disk===''?' on':'')+'" data-d="">全部磁盘</button>' +
+    list.map(d => '<button class="chip'+(S.disk===d.k?' on':'')+'" data-d="'+esc(d.k)+'">'+esc(d.k)+
+      '<i>'+num(d.n)+'</i></button>').join('');
 }
 
 /* 细分一层：当前分类下的部件/用途（特效、界面、茶叶、录屏…） */
@@ -382,7 +420,13 @@ document.getElementById('chips').addEventListener('click', e => {
   const b = e.target.closest('.chip'); if (!b) return;
   if (b.dataset.k === 't') S.type = b.dataset.v; else S.cat = b.dataset.v;
   S.sub = ''; S.ext=''; S.recent=''; S.title = (S.type!=='全部'? S.type : (S.cat!=='全部'? S.cat : '全部素材'));
-  showGrid(); refreshChips(); resetAndLoad(); renderSubchips();
+  showGrid(); refreshChips(); loadFacets().then(refreshChips); resetAndLoad(); renderSubchips();
+});
+
+document.getElementById('diskchips').addEventListener('click', e => {
+  const b = e.target.closest('.chip'); if (!b) return;
+  S.disk = b.dataset.d || '';
+  showGrid(); refreshChips(); resetAndLoad();
 });
 
 document.getElementById('subchips').addEventListener('click', e => {
@@ -431,6 +475,9 @@ function refreshChips(){
   document.querySelectorAll('#subchips .chip.s').forEach(c => {
     c.classList.toggle('on', (c.dataset.v || '') === (S.sub || ''));
   });
+  document.querySelectorAll('#diskchips .chip').forEach(c => {
+    c.classList.toggle('on', (c.dataset.d || '') === (S.disk || ''));
+  });
 }
 
 function showGrid(){
@@ -451,9 +498,44 @@ document.getElementById('back').onclick = () => { showAlbums(); S.q=''; document
 
 document.getElementById('sortsel').addEventListener('change', e => { S.sort = e.target.value; resetAndLoad(); });
 document.getElementById('reset').addEventListener('click', () => {
-  S.type='全部'; S.cat='全部'; S.loc='全部'; S.sub=''; S.ext=''; S.recent=''; S.q=''; S.sort='time'; S.title='全部素材';
+  S.type='全部'; S.cat='全部'; S.loc='全部'; S.disk=''; S.sub=''; S.ext=''; S.recent=''; S.q=''; S.sort='time'; S.title='全部素材';
   document.getElementById('q').value=''; document.getElementById('sortsel').value='time';
+  selSet.clear(); batchMode=false; paintSel();
   refreshChips(); showAlbums();
+});
+
+/* 批量选择 / 批量删除（删除进回收站） */
+document.getElementById('selmode').addEventListener('click', () => {
+  batchMode = !batchMode;
+  if (!batchMode) selSet.clear();
+  paintSel();
+});
+document.getElementById('bclear').addEventListener('click', () => {
+  selSet.clear(); batchMode = false; paintSel();
+});
+document.getElementById('bdel').addEventListener('click', async () => {
+  const ids = [...selSet];
+  if (!ids.length) return;
+  const ok = await opDialog('删除选中文件',
+    '将 ' + ids.length + ' 个文件移到回收站，索引里的记录会一起移除。',
+    null, '删除', true);
+  if (!ok) return;
+  document.getElementById('bdel').disabled = true;
+  try {
+    const r = await fetch('/api/batchdelete?ids=' + ids.join(','), {method:'POST'}).then(x => x.json());
+    if (r.ok) {
+      toast('已移到回收站：' + r.deleted + ' 个' + (r.failed && r.failed.length ? '，失败 ' + r.failed.length : ''));
+      selSet.clear(); batchMode = false; paintSel();
+      loadFacets();
+      if (S.view === 'grid') resetAndLoad(); else showAlbums();
+    } else {
+      toast(r.msg || '删除失败');
+      document.getElementById('bdel').disabled = false;
+    }
+  } catch (e) {
+    toast('删除失败：' + e.message);
+    document.getElementById('bdel').disabled = false;
+  }
 });
 let qt;
 document.getElementById('q').addEventListener('input', e => {
@@ -500,7 +582,7 @@ async function loadMore(){
   if (S.loading || S.end) return;
   S.loading = true;
   const seq = S.seq;
-  const qs = new URLSearchParams({type:S.type, cat:S.cat, loc:S.loc, sub:S.sub, q:S.q, sort:S.sort,
+  const qs = new URLSearchParams({type:S.type, cat:S.cat, loc:S.loc, disk:S.disk, sub:S.sub, q:S.q, sort:S.sort,
                                   ext:S.ext, recent:S.recent, offset:S.offset, limit:PAGE});
   try {
     const r = await fetch('/api/items?'+qs).then(r=>r.json());
@@ -549,33 +631,84 @@ async function loadMore(){
 new IntersectionObserver(es => { if (es[0].isIntersecting && S.view==='grid') loadMore(); }, {rootMargin:'400px'})
   .observe(document.getElementById('sentinel'));
 
-/* 单击选中 / 双击打开 / 右键菜单 */
-let selId = null, curId = null;
+/* 单击选中 / 双击打开 / 右键菜单；批量模式下点击即多选 */
+let selId = null, curId = null, batchMode = false, lastPick = null;
+const selSet = new Set();
 const itemOf = id => S.items.find(x => x.id === id);
 
-function setSel(id){
-  selId = id;
-  document.querySelectorAll('.card.sel').forEach(c => c.classList.remove('sel'));
-  const c = document.querySelector('.card[data-id="'+id+'"]');
-  if (c) c.classList.add('sel');
+function paintSel(){
+  document.querySelectorAll('.card').forEach(c => {
+    const id = +c.dataset.id;
+    c.classList.toggle('sel', selSet.has(id));
+    c.classList.toggle('chk', selSet.has(id));
+  });
+  const n = selSet.size;
+  const bar = document.getElementById('batchbar');
+  bar.classList.toggle('on', n > 0);
+  document.getElementById('bcount').textContent = '已选 ' + n + ' 项';
+  document.getElementById('bdel').disabled = n === 0;
+  const sm = document.getElementById('selmode');
+  sm.textContent = batchMode ? '退出批量' : '批量选择';
+  sm.classList.toggle('act', batchMode);
+}
+
+function setSel(id, add){
+  if (!add) selSet.clear();
+  if (add && selSet.has(id)) selSet.delete(id); else selSet.add(id);
+  lastPick = id;
+  paintSel();
+}
+
+function selectRange(id){
+  const ids = S.items.map(x => x.id);
+  const a = ids.indexOf(lastPick), b = ids.indexOf(id);
+  if (a < 0 || b < 0) { setSel(id); return; }
+  selSet.clear();
+  const lo = Math.min(a, b), hi = Math.max(a, b);
+  for (let i = lo; i <= hi; i++) selSet.add(ids[i]);
+  paintSel();
 }
 
 grid.addEventListener('click', e => {
   const c = e.target.closest('.card'); if (!c) return;
-  setSel(+c.dataset.id);
+  const id = +c.dataset.id;
+  if (batchMode || e.ctrlKey || e.metaKey) {
+    if (!batchMode) { batchMode = true; }
+    setSel(id, true);
+    return;
+  }
+  if (e.shiftKey && lastPick != null) { selectRange(id); return; }
+  setSel(id);
 });
 grid.addEventListener('dblclick', e => {
   const c = e.target.closest('.card'); if (!c) return;
+  if (batchMode) return;
   e.preventDefault(); openItem(+c.dataset.id);
 });
 grid.addEventListener('contextmenu', e => {
   const c = e.target.closest('.card'); if (!c) return;
+  if (batchMode) return;
   e.preventDefault(); setSel(+c.dataset.id); showCtx(+c.dataset.id, e.clientX, e.clientY);
 });
 
 function openItem(id){
   const it = itemOf(id); if (!it) return;
-  if (it.media === '图片') openViewer(id); else openPlayer(id);
+  if (it.media === '图片') openViewer(id);
+  else if (it.media === '文档') openDocCover(id);
+  else openPlayer(id);
+}
+
+function openDocCover(id){
+  const it = itemOf(id); if (!it) return;
+  curId = id;
+  const media = document.getElementById('lbmedia');
+  media.classList.remove('aud');
+  media.classList.add('docw');
+  media.innerHTML = '<img class="doccov" src="/thumb/'+id+'" alt="">';
+  document.getElementById('lbinfo').innerHTML =
+    '<b>'+esc(it.name)+'</b><div class="m">文档 · 封面预览 · '+kb(it.size)+'</div>'+
+    '<div class="m">'+esc(it.path)+'</div>';
+  document.getElementById('lb').classList.add('on');
 }
 
 /* ---------- 视频 / 音频播放 ---------- */
@@ -588,6 +721,7 @@ function openPlayer(id){
   const seq = ++playSeq;
   const media = document.getElementById('lbmedia');
   media.classList.toggle('aud', it.media !== '视频');
+  media.classList.remove('docw');
   document.getElementById('lbinfo').innerHTML =
     '<b>'+esc(it.name)+'</b><div class="m">'+esc(it.cat)+(it.sub? ' · '+esc(it.sub):'')+' · '+kb(it.size)+'</div>'+
     '<div class="m">'+esc(it.path)+'</div>';
@@ -864,7 +998,7 @@ async function deleteItem(id){
 function showCtx(id, x, y){
   const it = itemOf(id); if (!it) return;
   const rows = [
-    [it.media === '图片' ? '查看图片（内置查看器）' : '播放', '双击', () => openItem(id)],
+    [it.media === '图片' ? '查看图片（内置查看器）' : (it.media === '文档' ? '查看封面' : '播放'), '双击', () => openItem(id)],
     ['用系统程序打开', '', () => act('open', id)],
     ['在资源管理器中定位', '', () => act('reveal', id)],
     ['-'],

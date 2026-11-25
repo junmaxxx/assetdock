@@ -1,4 +1,4 @@
-# 媒体库 · Media Library
+# 素材坞 · AssetDock
 
 一个本地媒体索引工具：把电脑上的图片、视频、音频扫成一份 SQLite 索引，用相册的方式浏览，双击就能放大看或在窗口里播放。
 
@@ -8,7 +8,7 @@
 
 ## 下载（Windows 免安装）
 
-到 [Releases · v1.2](../../releases/tag/v1.2) 下载 `media-library-win64-v1.2.zip`（约 67 MB），解压到一个固定目录，双击 `媒体库.exe` 即可。不需要装 Python，首次启动会先扫盘并显示进度。
+到 [Releases · v1.3](../../releases/tag/v1.3) 下载 `assetdock-win64-v1.3.zip`（约 67 MB），解压到一个固定目录，双击 `素材坞.exe` 即可。不需要装 Python，首次启动会先扫盘并显示进度。
 
 ## 功能
 
@@ -54,7 +54,7 @@ _工具/py/Scripts/python 库服务.py serve
 
 第一次启动会自动扫描并显示进度页。之后每 15 分钟自动补扫一次。
 
-Windows 也可以直接双击 `启动媒体库.bat`（会使用 `_工具\py` 里的解释器）。
+Windows 也可以直接双击 `启动素材坞.bat`（会使用 `_工具\py` 里的解释器）。
 
 ## 扫描范围与跳过
 
@@ -83,14 +83,14 @@ copy 跳过目录.example.txt 跳过目录.txt
 
 ```bash
 pyinstaller --noconfirm --clean --onedir --noconsole ^
-  --icon icon.ico --name 媒体库 ^
+  --icon icon.ico --name 素材坞 ^
   --add-data "app.html;." --add-data "icon.ico;." ^
   --collect-all webview --collect-all imageio_ffmpeg --collect-all pillow_heif ^
   --collect-submodules pythonnet --hidden-import clr --hidden-import clr_loader --hidden-import cffi ^
   库服务.py
 ```
 
-成品在 `dist/媒体库/`，整个文件夹拷走即可运行，不需要装 Python。
+成品在 `dist/素材坞/`，整个文件夹拷走即可运行，不需要装 Python。
 
 ## 已知限制
 

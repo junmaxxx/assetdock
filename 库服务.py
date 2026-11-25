@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-媒体库 · 全机媒体索引
+素材坞 · 全机素材索引
 只读扫描磁盘上的图片 / 视频 / 音频，建索引并起一个本地网页，支持分类、搜索、缩略图预览、直接打开原文件。
 不复制、不移动、不删除任何用户文件。
 
@@ -1373,16 +1373,16 @@ def serve(no_open=False):
     if os.name == 'nt':
         try:
             import ctypes
-            ctypes.windll.kernel32.SetConsoleTitleW('媒体库 · Media Library')
+            ctypes.windll.kernel32.SetConsoleTitleW('素材坞 · AssetDock')
         except Exception:
             pass
     url, httpd, _scan = start_http()
     if httpd is None:
-        print('媒体库已经在运行：' + url)
+        print('素材坞已经在运行：' + url)
         if not no_open:
             webbrowser.open(url)
         return
-    print('媒体库已启动：' + url)
+    print('素材坞已启动：' + url)
     print('关掉窗口即停止服务。开着的时候每 15 分钟自动补扫，新素材会自动出现。')
     if not no_open:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
@@ -1393,7 +1393,7 @@ def serve(no_open=False):
 
 
 LOADING_HTML = """<!doctype html><html lang="zh-CN"><meta charset="utf-8">
-<title>媒体库</title>
+<title>素材坞</title>
 <style>
   :root{--acc:#8b6cff;--acc2:#4bd1c4;--txt:#e8ecf4;--dim:#8b93a7;--dim2:#5d6478;--line:rgba(49,58,76,.7)}
   *{box-sizing:border-box}
@@ -1434,7 +1434,7 @@ LOADING_HTML = """<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <body>
 <div class="wrap">
   <div class="logo"><i></i><i></i><i></i><i></i></div>
-  <h1>媒体库</h1>
+  <h1>素材坞</h1>
   <div class="sub" id="sub">正在本地建立索引，只记录位置，不复制、不改动任何文件</div>
   <div class="bar" id="bar"></div>
   <div class="nums">
@@ -1497,7 +1497,7 @@ def icon_file():
     return None
 
 
-def set_window_icon(title='媒体库', timeout=20):
+def set_window_icon(title='素材坞', timeout=20):
     """给原生窗口和任务栏换成自己的图标（WebView2 窗体默认是 Python 图标）"""
     if os.name != 'nt':
         return
@@ -1530,7 +1530,7 @@ def set_window_icon(title='媒体库', timeout=20):
 _MUTEX = []
 
 
-def acquire_single_instance(name='Local\\MediaLibraryWindow'):
+def acquire_single_instance(name='Local\\AssetDockWindow'):
     """只允许一个窗口实例：已经有一个在跑就返回 False（顺便把它叫到前台）"""
     if os.name != 'nt':
         return True
@@ -1546,7 +1546,7 @@ def acquire_single_instance(name='Local\\MediaLibraryWindow'):
     return True
 
 
-def focus_existing_window(title='媒体库'):
+def focus_existing_window(title='素材坞'):
     if os.name != 'nt':
         return False
     try:
@@ -1577,7 +1577,7 @@ def gui():
     """原生窗口模式：不开浏览器、不占命令行窗口"""
     if not acquire_single_instance():
         focus_existing_window()
-        print('媒体库已经在运行，已切回原窗口')
+        print('素材坞已经在运行，已切回原窗口')
         return
     try:
         import webview
@@ -1588,7 +1588,7 @@ def gui():
         print('GUI 组件不可用（%s），已改用浏览器打开：%s' % (e, url))
         threading.Event().wait()
         return
-    win = webview.create_window('媒体库', html=LOADING_HTML, width=1440, height=920,
+    win = webview.create_window('素材坞', html=LOADING_HTML, width=1440, height=920,
                                 min_size=(960, 640), background_color='#0f1116')
 
     def boot():

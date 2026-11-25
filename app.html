@@ -166,7 +166,27 @@
   .ci.dim{color:#5c6478;cursor:default}
   .ci.dim:hover{background:none}
   .ci em{font-style:normal;color:#6a7387;font-size:10.5px}
+  .ci.danger{color:#ff8a8a}
+  .ci.danger:hover{background:rgba(255,90,90,.16)}
   #ctx hr{border:0;height:1px;background:rgba(60,70,92,.55);margin:5px 4px}
+
+  /* 重命名 / 删除确认 */
+  #opdlg{position:fixed;inset:0;z-index:120;display:none;align-items:center;justify-content:center;
+    background:rgba(4,6,10,.62);backdrop-filter:blur(4px)}
+  #opdlg.on{display:flex}
+  .odbox{width:min(480px,92vw);background:#151a24;border:1px solid rgba(62,72,94,.9);border-radius:14px;
+    padding:18px 20px 16px;box-shadow:0 24px 60px rgba(0,0,0,.6)}
+  .odh{font-size:14px;color:#e6ebf7;font-weight:600;margin-bottom:6px}
+  .odm{font-size:12px;color:#8b93a8;line-height:1.8;margin-bottom:10px;word-break:break-all}
+  #odin{width:100%;box-sizing:border-box;background:#0f131b;border:1px solid rgba(62,72,94,.9);
+    color:#dfe5f2;border-radius:9px;padding:9px 11px;font-size:13px;outline:none;margin-bottom:14px}
+  #odin:focus{border-color:rgba(139,125,255,.8)}
+  .odb{display:flex;gap:9px;justify-content:flex-end}
+  .odb button{padding:7px 16px;border-radius:9px;font-size:12.5px;cursor:pointer;
+    background:rgba(26,31,43,.9);border:1px solid rgba(60,70,92,.8);color:#dfe5f2}
+  .odb button:hover{border-color:rgba(139,125,255,.8)}
+  #odok.danger{background:rgba(120,30,36,.85);border-color:rgba(255,110,110,.5);color:#ffdede}
+  #odok.danger:hover{background:rgba(150,36,44,.95)}
 
   #lb{position:fixed;inset:0;background:rgba(6,8,12,.86);backdrop-filter:blur(10px);display:none;z-index:50;
     padding:58px 24px 10px;box-sizing:border-box;flex-direction:column;align-items:center;justify-content:center;gap:14px}
@@ -279,6 +299,18 @@
 </div>
 
 <div id="ctx"></div>
+
+<div id="opdlg">
+  <div class="odbox">
+    <div class="odh" id="odtitle">重命名</div>
+    <div class="odm" id="odmsg"></div>
+    <input id="odin" type="text" spellcheck="false">
+    <div class="odb">
+      <button id="odno">取消</button>
+      <button id="odok">确定</button>
+    </div>
+  </div>
+</div>
 
 <div id="lb">
   <button id="lbclose">×</button>
@@ -699,12 +731,84 @@ async function act(kind, id){
 function copyText(t, msg){
   navigator.clipboard.writeText(t).then(()=>toast(msg)).catch(()=>toast('复制失败'));
 }
+
+/* ---------- 重命名 / 删除弹窗 ---------- */
+const opdlg = document.getElementById('opdlg');
+const odin = document.getElementById('odin');
+const odok = document.getElementById('odok');
+let odResolve = null;
+function opDialog(title, msg, value, okText, danger){
+  return new Promise(res => {
+    odResolve = res;
+    document.getElementById('odtitle').textContent = title;
+    document.getElementById('odmsg').textContent = msg || '';
+    if (value === null) { odin.style.display = 'none'; }
+    else { odin.style.display = ''; odin.value = value; }
+    odok.textContent = okText || '确定';
+    odok.classList.toggle('danger', !!danger);
+    opdlg.classList.add('on');
+    if (value !== null) setTimeout(() => { odin.focus(); odin.select(); }, 30);
+  });
+}
+function opClose(val){
+  opdlg.classList.remove('on');
+  const r = odResolve; odResolve = null;
+  if (r) r(val);
+}
+odok.onclick = () => opClose(odin.style.display === 'none' ? true : odin.value);
+document.getElementById('odno').onclick = () => opClose(null);
+odin.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); odok.click(); }
+  if (e.key === 'Escape') { e.preventDefault(); opClose(null); }
+});
+opdlg.addEventListener('mousedown', e => { if (e.target === opdlg) opClose(null); });
+
+async function clipItem(kind, id){
+  const r = await fetch('/api/'+kind+'/'+id, {method:'POST'}).then(r=>r.json()).catch(()=>({ok:false,msg:'请求失败'}));
+  toast(r.ok ? r.msg : ('失败：' + (r.msg||'')));
+}
+function cardNode(id){ return document.querySelector('.card[data-id="' + id + '"]'); }
+
+async function renameItem(id){
+  const it = itemOf(id); if (!it) return;
+  const v = await opDialog('重命名', '只改这一层文件名；不写扩展名会自动保留 ' + (it.ext || ''), it.name, '重命名');
+  if (v === null) return;
+  const nm = String(v).trim();
+  if (!nm) { toast('文件名不能为空'); return; }
+  const r = await fetch('/api/rename/' + id + '?name=' + encodeURIComponent(nm), {method:'POST'})
+    .then(r=>r.json()).catch(()=>({ok:false,msg:'请求失败'}));
+  if (!r.ok) { toast('重命名失败：' + (r.msg||'')); return; }
+  it.name = r.name; it.path = r.path;
+  const c = cardNode(id);
+  if (c) { const n = c.querySelector('.nm'); if (n) { n.textContent = r.name; n.title = r.path; } }
+  if (vId === id) document.getElementById('vname').textContent = r.name;
+  toast('已重命名为 ' + r.name);
+  loadFacets();
+}
+
+async function deleteItem(id){
+  const it = itemOf(id); if (!it) return;
+  const ok = await opDialog('删除文件', '把「' + it.name + '」移到回收站？原文件会从磁盘上消失，需要的话可以从回收站还原。', null, '移到回收站', true);
+  if (!ok) return;
+  const r = await fetch('/api/delete/' + id, {method:'POST'}).then(r=>r.json()).catch(()=>({ok:false,msg:'请求失败'}));
+  if (!r.ok) { toast('删除失败：' + (r.msg||'')); return; }
+  S.items = S.items.filter(x => x.id !== id);
+  const c = cardNode(id); if (c) c.remove();
+  if (vId === id) { const b = document.getElementById('vclose'); if (b) b.click(); }
+  toast(r.msg || '已移到回收站');
+  loadFacets();
+}
 function showCtx(id, x, y){
   const it = itemOf(id); if (!it) return;
   const rows = [
     [it.media === '图片' ? '查看图片（内置查看器）' : '播放', '双击', () => openItem(id)],
     ['用系统程序打开', '', () => act('open', id)],
     ['在资源管理器中定位', '', () => act('reveal', id)],
+    ['-'],
+    ['复制', '到剪贴板', () => clipItem('copyclip', id)],
+    ['剪切', '到剪贴板', () => clipItem('cutclip', id)],
+    ['重命名…', '', () => renameItem(id)],
+    ['删除', '移到回收站', () => deleteItem(id), 'danger'],
     ['-'],
     ['复制完整路径', '', () => copyText(it.path, '已复制路径')],
     ['复制文件名', '', () => copyText(it.name, '已复制文件名')],
@@ -713,7 +817,7 @@ function showCtx(id, x, y){
   ];
   ctx.innerHTML = rows.map((r, i) => r[0] === '-'
     ? '<hr>'
-    : '<div class="ci" data-i="' + i + '"><span>' + esc(r[0]) + '</span>' + (r[1] ? '<em>' + esc(r[1]) + '</em>' : '') + '</div>').join('');
+    : '<div class="ci' + (r[3] === 'danger' ? ' danger' : '') + '" data-i="' + i + '"><span>' + esc(r[0]) + '</span>' + (r[1] ? '<em>' + esc(r[1]) + '</em>' : '') + '</div>').join('');
   ctx.dataset.id = id;
   ctx.classList.add('on');
   ctx.style.left = '0px'; ctx.style.top = '0px';

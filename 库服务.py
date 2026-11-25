@@ -692,6 +692,26 @@ class Handler(BaseHTTPRequestHandler):
             self.api_open(int(m.group(1)), 'reveal')
             return
 
+        m = re.match(r'^/api/delete/(\d+)$', p)
+        if m:
+            api_delete(self, int(m.group(1)))
+            return
+
+        m = re.match(r'^/api/rename/(\d+)$', p)
+        if m:
+            api_rename(self, int(m.group(1)), (q.get('name') or [''])[0])
+            return
+
+        m = re.match(r'^/api/copyclip/(\d+)$', p)
+        if m:
+            api_clip(self, int(m.group(1)), False)
+            return
+
+        m = re.match(r'^/api/cutclip/(\d+)$', p)
+        if m:
+            api_clip(self, int(m.group(1)), True)
+            return
+
         self._send(404, 'not found', 'text/plain; charset=utf-8')
 
     def do_HEAD(self):
@@ -916,6 +936,157 @@ class Handler(BaseHTTPRequestHandler):
                 con.commit()
         con.close()
         self._json({'ok': True})
+
+
+def _row_path(item_id):
+    con = connect()
+    row = con.execute('SELECT path, name, ext, size, mtime FROM items WHERE id=?', (item_id,)).fetchone()
+    con.close()
+    return row
+
+
+def set_explorer_clipboard(path, cut=False):
+    """把文件放进 Windows 剪贴板（CF_HDROP），资源管理器里可直接粘贴；cut=True 为剪切"""
+    import ctypes, struct
+    from ctypes import wintypes
+    k32 = ctypes.windll.kernel32
+    u32 = ctypes.windll.user32
+    u32.SetClipboardData.argtypes = [wintypes.UINT, ctypes.c_void_p]
+    u32.SetClipboardData.restype = ctypes.c_void_p
+    u32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
+    u32.RegisterClipboardFormatW.restype = wintypes.UINT
+    k32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    k32.GlobalAlloc.restype = ctypes.c_void_p
+    k32.GlobalLock.argtypes = [ctypes.c_void_p]
+    k32.GlobalLock.restype = ctypes.c_void_p
+    k32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    k32.GlobalFree.argtypes = [ctypes.c_void_p]
+
+    def _put(fmt, data):
+        h = k32.GlobalAlloc(0x0002, len(data))  # GMEM_MOVEABLE
+        if not h:
+            raise OSError('GlobalAlloc 失败')
+        p = k32.GlobalLock(h)
+        ctypes.memmove(p, data, len(data))
+        k32.GlobalUnlock(h)
+        if not u32.SetClipboardData(fmt, h):
+            k32.GlobalFree(h)
+            raise OSError('SetClipboardData 失败')
+
+    # DROPFILES 头：pFiles=20, pt=(0,0), fNC=0, fWide=1，后面是双 null 结尾的 UTF-16 路径
+    files = path.encode('utf-16-le') + b'\x00\x00' + b'\x00\x00'
+    blob = struct.pack('<IiiII', 20, 0, 0, 0, 1) + files
+    if not u32.OpenClipboard(None):
+        raise OSError('剪贴板被别的程序占用')
+    try:
+        u32.EmptyClipboard()
+        _put(15, blob)  # CF_HDROP
+        fmt = u32.RegisterClipboardFormatW('Preferred DropEffect')
+        if fmt:
+            _put(fmt, struct.pack('<I', 2 if cut else 1))
+    finally:
+        u32.CloseClipboard()
+
+
+def recycle_file(path):
+    """用 Windows 回收站删除（Microsoft.VisualBasic），不弹确认框、不留黑窗"""
+    import base64
+    script = ("Add-Type -AssemblyName Microsoft.VisualBasic;"
+              "[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($env:ML_TARGET,"
+              "'OnlyErrorDialogs','SendToRecycleBin')")
+    enc = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+    env = dict(os.environ)
+    env['ML_TARGET'] = path
+    flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    r = subprocess.run([os.path.join(os.environ.get('SystemRoot', r'C:\Windows'),
+                                     'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+                        '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
+                        '-EncodedCommand', enc],
+                       env=env, capture_output=True, creationflags=flags, timeout=30)
+    if os.path.exists(path):
+        msg = (r.stderr or b'').decode('utf-8', 'ignore').strip() or '删除失败（可能没有回收站权限）'
+        return False, msg
+    return True, '已移到回收站'
+
+
+def api_delete(self, item_id):
+    row = _row_path(item_id)
+    if not row:
+        self._json({'ok': False, 'msg': '没有这条记录'}, 404)
+        return
+    path, name = row[0], row[1]
+    if not os.path.exists(path):
+        con = connect()
+        con.execute('DELETE FROM items WHERE id=?', (item_id,))
+        con.commit(); con.close()
+        self._json({'ok': False, 'msg': '文件已不在原位，已清掉这条索引'}, 404)
+        return
+    ok, msg = recycle_file(path)
+    if not ok:
+        self._json({'ok': False, 'msg': msg}, 500)
+        return
+    con = connect()
+    con.execute('DELETE FROM items WHERE id=?', (item_id,))
+    con.commit(); con.close()
+    self._json({'ok': True, 'msg': msg, 'name': name})
+
+
+def api_rename(self, item_id, new_name):
+    row = _row_path(item_id)
+    if not row:
+        self._json({'ok': False, 'msg': '没有这条记录'}, 404)
+        return
+    path, name, ext, size, mtime = row
+    if not os.path.exists(path):
+        self._json({'ok': False, 'msg': '文件已不在原位，无法重命名'}, 404)
+        return
+    new_name = (new_name or '').strip()
+    if not new_name:
+        self._json({'ok': False, 'msg': '文件名不能为空'}, 400)
+        return
+    if any(ch in new_name for ch in '\\/:*?"<>|') or new_name in ('.', '..'):
+        self._json({'ok': False, 'msg': '文件名不能包含 \\ / : * ? " < > |'}, 400)
+        return
+    if os.path.splitext(new_name)[1] == '' and ext:
+        new_name += ext
+    folder = os.path.dirname(path)
+    target = os.path.join(folder, new_name)
+    if os.path.normcase(target) == os.path.normcase(path):
+        self._json({'ok': True, 'msg': '文件名没有变化'})
+        return
+    if os.path.exists(target):
+        self._json({'ok': False, 'msg': '同目录下已经有同名文件'}, 400)
+        return
+    try:
+        os.rename(path, target)
+    except OSError as e:
+        self._json({'ok': False, 'msg': '重命名失败：' + e.strerror}, 500)
+        return
+    st = os.stat(target)
+    n_ext = os.path.splitext(new_name)[1].lower()
+    con = connect()
+    con.execute('UPDATE items SET path=?, name=?, ext=?, size=?, mtime=?, cat=?, sub=?, w=NULL, h=NULL WHERE id=?',
+                (target, new_name, n_ext, st.st_size, int(st.st_mtime),
+                 guess_cat(target, media_of(n_ext)), sub_of(target, media_of(n_ext)), item_id))
+    con.commit(); con.close()
+    self._json({'ok': True, 'msg': '已重命名为 ' + new_name, 'name': new_name, 'path': target})
+
+
+def api_clip(self, item_id, cut):
+    row = _row_path(item_id)
+    if not row:
+        self._json({'ok': False, 'msg': '没有这条记录'}, 404)
+        return
+    path = row[0]
+    if not os.path.exists(path):
+        self._json({'ok': False, 'msg': '文件已不在原位'}, 404)
+        return
+    try:
+        set_explorer_clipboard(path, cut)
+    except Exception as e:
+        self._json({'ok': False, 'msg': '复制到剪贴板失败：' + str(e)}, 500)
+        return
+    self._json({'ok': True, 'msg': '已剪切，可到资源管理器粘贴' if cut else '已复制，可到资源管理器粘贴'})
 
 
 def find_running():

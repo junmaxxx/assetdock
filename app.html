@@ -399,7 +399,7 @@
     <button id="vstar" title="收藏 / 取消收藏">☆ 收藏</button>
     <button id="vtag" title="给这张素材加标签"># 标签</button>
     <button id="vsystem">用系统程序打开</button>
-    <button id="vreveal2">定位</button>
+    <button id="vreveal2">打开文件所在位置</button>
     <button id="vclose">关闭 ✕</button>
   </div>
   <div class="vstage" id="vstage"><img id="vimg" alt=""></div>
@@ -435,7 +435,7 @@
   <div class="lbinfo" id="lbinfo"></div>
   <div class="lbact">
     <button id="bopen">用系统程序打开</button>
-    <button id="breveal">在资源管理器中定位</button>
+    <button id="breveal">打开文件所在位置</button>
     <button id="bcopy">复制完整路径</button>
   </div>
 </div>
@@ -1189,7 +1189,7 @@ document.addEventListener('keydown', e => {
 const ctx = document.getElementById('ctx');
 async function act(kind, id){
   const r = await fetch('/api/'+kind+'/'+id, {method:'POST'}).then(r=>r.json()).catch(()=>({ok:false,msg:'请求失败'}));
-  toast(r.ok ? (kind === 'open' ? '已交给系统打开' : '已在资源管理器中定位') : ('失败：' + (r.msg||'')));
+  toast(r.ok ? (kind === 'open' ? '已交给系统打开' : '已打开文件所在位置') : ('失败：' + (r.msg||'')));
 }
 function copyText(t, msg){
   navigator.clipboard.writeText(t).then(()=>toast(msg)).catch(()=>toast('复制失败'));
@@ -1266,7 +1266,7 @@ function showCtx(id, x, y){
   const rows = [
     [it.media === '图片' ? '查看图片（内置查看器）' : (it.media === '文档' ? '查看封面' : '播放'), '双击', () => openItem(id)],
     ['用系统程序打开', '', () => act('open', id)],
-    ['在资源管理器中定位', '', () => act('reveal', id)],
+    ['打开文件所在位置', '', () => act('reveal', id)],
     ['-'],
     [it.fav ? '★ 取消收藏' : '☆ 收藏', '', () => toggleFav([id])],
     ['标签…', (it.tags && it.tags.length ? '#'+it.tags.join(' #') : ''), () => openTagDialog([id], it)],

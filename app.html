@@ -374,7 +374,7 @@
   <span>Ctrl+滚轮 缩放界面</span>
   <span>Ctrl+Alt+Space 唤起搜索</span>
   <span>后台每 15 分钟自动补扫，新素材自动出现</span>
-  <span style="margin-left:auto;color:#3f4657">素材坞 v1.6 · 本地运行</span>
+  <span style="margin-left:auto;color:#3f4657">素材坞 v1.6.2 · 本地运行</span>
 </footer>
 
 <div id="batchbar">
@@ -1012,9 +1012,10 @@ function showUnsupportedVideo(id, seq, r){
   if (seq !== playSeq) return;
   const box = document.querySelector('#lbmedia .tcip'); if (!box) return;
   const reason = esc(r.reason || 'HEVC/H.265');
-  box.innerHTML = '<div class="tp">这个 MP4 内置播不了</div>'+
-    '<div class="tm">源文件是 '+reason+'，Windows 浏览器内核不支持。<br>可以马上用系统播放器打开，或生成一份 540p 内置预览（可能要十几秒）。</div>'+
-    '<div class="lbact"><button id="tpopen">用系统程序打开</button><button id="tptrans">生成内置预览</button></div>';
+  box.innerHTML = '<div class="tp">这个 MP4 需要 mpv 播放</div>'+
+    '<div class="tm">源文件是 '+reason+'，Windows 浏览器内核不支持。<br>用内置 mpv 可以直接播，或马上用系统播放器打开；也可以生成一份 540p 网页预览。</div>'+
+    '<div class="lbact"><button id="tpm">用内置播放器打开</button><button id="tpopen">用系统程序打开</button><button id="tptrans">生成网页预览</button></div>';
+  document.getElementById('tpm').onclick = () => mpvPlay(id, true);
   document.getElementById('tpopen').onclick = () => act('open', id);
   document.getElementById('tptrans').onclick = async () => {
     if (seq !== playSeq) return;
@@ -1194,6 +1195,15 @@ async function act(kind, id){
 function copyText(t, msg){
   navigator.clipboard.writeText(t).then(()=>toast(msg)).catch(()=>toast('复制失败'));
 }
+async function mpvPlay(id, closeHtml){
+  const r = await fetch('/api/mpvplay/'+id, {method:'POST'}).then(r=>r.json()).catch(()=>({ok:false,msg:'请求失败'}));
+  if (r.ok) {
+    toast('已用内置播放器打开');
+    if (closeHtml) closeLb();
+  } else {
+    toast('内置播放器打不开：' + (r.msg || '未知错误'));
+  }
+}
 
 /* ---------- 重命名 / 删除弹窗 ---------- */
 const opdlg = document.getElementById('opdlg');
@@ -1266,6 +1276,7 @@ function showCtx(id, x, y){
   const rows = [
     [it.media === '图片' ? '查看图片（内置查看器）' : (it.media === '文档' ? '查看封面' : '播放'), '双击', () => openItem(id)],
     ['用系统程序打开', '', () => act('open', id)],
+    ...((it.media === '视频' || it.media === '音频') ? [['用内置播放器打开', '全编码 mpv', () => mpvPlay(id)]] : []),
     ['打开文件所在位置', '', () => act('reveal', id)],
     ['-'],
     [it.fav ? '★ 取消收藏' : '☆ 收藏', '', () => toggleFav([id])],

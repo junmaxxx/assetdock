@@ -973,6 +973,50 @@ def _run_transcode(item_id, src, out, dur):
             job['msg'] = '转码失败：' + str(e)[:160]
 
 
+_MPV_PROC = {'proc': None, 'id': None}
+
+
+def mpv_exe():
+    """内置 mpv：打包版在 _MEIPASS/mpv，源码运行在 _工具/mpv"""
+    cands = []
+    mei = getattr(sys, '_MEIPASS', '')
+    if mei:
+        cands.append(os.path.join(mei, 'mpv', 'mpv.exe'))
+    cands.append(os.path.join(TOOLS, 'mpv', 'mpv.exe'))
+    cands.append(os.path.join(BASE, 'mpv', 'mpv.exe'))
+    for p in cands:
+        if os.path.exists(p):
+            return p
+    return ''
+
+
+def launch_mpv(path, title):
+    exe = mpv_exe()
+    if not exe:
+        return False, '没有找到内置播放器 mpv.exe'
+    try:
+        old = _MPV_PROC.get('proc')
+        if old is not None and old.poll() is None:
+            try:
+                old.terminate()
+                old.wait(timeout=1.0)
+            except Exception:
+                try:
+                    old.kill()
+                except Exception:
+                    pass
+        flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        proc = subprocess.Popen(
+            [exe, '--no-terminal', '--force-window=yes', '--keep-open=no', '--osc=yes',
+             '--geometry=80%', '--hwdec=auto-safe', '--title=素材坞 · ' + (title or ''), '--', path],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=flags)
+        _MPV_PROC.update(proc=proc, id=title)
+        return True, ''
+    except Exception as e:
+        return False, str(e)[:160]
+
+
 def play_state(item_id, path, mtime, ext, allow_transcode=True):
     """返回 {'mode': direct/ready/transcoding/unsupported/error, 'url','pct','msg','reason'}"""
     codec, reason = '', (ext or '').lstrip('.').upper() + ' 格式'
@@ -2058,6 +2102,11 @@ class Handler(BaseHTTPRequestHandler):
             self.serve_play(int(m.group(1)))
             return
 
+        m = re.match(r'^/api/mpvplay/(\d+)$', p)
+        if m:
+            self.api_mpvplay(int(m.group(1)))
+            return
+
         m = re.match(r'^/api/playprep/(\d+)$', p)
         if m:
             self.api_playprep(int(m.group(1)), q)
@@ -2450,6 +2499,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, '还没转好，先刷新一下', 'text/plain; charset=utf-8')
             return
         self._send_path(out, 'video/mp4')
+
+    def api_mpvplay(self, item_id):
+        con = connect()
+        row = con.execute('SELECT path, name FROM items WHERE id=?', (item_id,)).fetchone()
+        con.close()
+        if not row:
+            self._json({'ok': False, 'msg': '没有这条记录'}, 404)
+            return
+        path, name = row
+        if not os.path.exists(path):
+            self._json({'ok': False, 'msg': '文件已不在原位'})
+            return
+        ok, msg = launch_mpv(path, name)
+        self._json({'ok': ok, 'msg': msg})
 
     def api_playprep(self, item_id, q=None):
         allow = ((q or {}).get('transcode') or ['0'])[0] in ('1', 'true', 'yes')

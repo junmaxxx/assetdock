@@ -245,6 +245,88 @@
     font-size:14px;line-height:1;cursor:pointer;padding:0}
   #zctl .zb:hover{background:rgba(255,255,255,.08);color:#fff}
   #zrng{width:96px;height:16px;accent-color:#8b7dff;cursor:pointer;background:transparent}
+
+  /* v1.6：标签 / 工具面板 / 待删除 / 重复清理 */
+  .bar.tags{margin-top:8px;padding-top:8px;border-top:1px dashed rgba(255,158,92,.16)}
+  .chip.t{border-color:rgba(255,158,92,.26);color:#d8bda8;padding:4px 10px;font-size:11.5px}
+  .chip.t.on{border-color:rgba(255,158,92,.85);color:#fff;background:linear-gradient(135deg,rgba(255,158,92,.2),rgba(233,96,140,.14));box-shadow:0 0 0 3px rgba(255,158,92,.08)}
+  .chip.fav{border-color:rgba(255,210,90,.32);color:#e7d29a}
+  .thumb .star{position:absolute;right:8px;top:8px;z-index:4;width:24px;height:24px;border-radius:50%;
+    display:none;align-items:center;justify-content:center;background:rgba(8,10,14,.66);color:#ffd35c;
+    font-size:14px;cursor:pointer;border:1px solid rgba(255,255,255,.12)}
+  .thumb .star.on{display:flex;background:rgba(255,190,60,.2);border-color:rgba(255,210,90,.5)}
+  .card:hover .thumb .star{display:flex}
+  .card .tg{display:flex;gap:4px;flex-wrap:wrap;margin-top:5px}
+  .card .tg i{font-style:normal;font-size:10px;color:#b9a999;background:rgba(255,158,92,.1);border:1px solid rgba(255,158,92,.22);border-radius:5px;padding:1px 5px}
+  #batchbar #bops{color:#e7dccf}
+
+  .panel{position:fixed;inset:0;z-index:110;display:none;align-items:center;justify-content:center;
+    background:rgba(4,6,10,.66);backdrop-filter:blur(6px)}
+  .panel.on{display:flex}
+  .pbox{width:min(720px,94vw);max-height:88vh;overflow:auto;background:#151a24;border:1px solid rgba(62,72,94,.9);
+    border-radius:16px;padding:18px 20px 18px;box-shadow:0 26px 70px rgba(0,0,0,.65)}
+  .pbox.narrow{width:min(480px,94vw)}
+  .pbox.wide{width:min(1080px,96vw)}
+  .phead{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+  .phead b{font-size:15px;color:#eef2f9}
+  .phead .mini{flex:1}
+  .pclose{width:30px;height:30px;border-radius:50%;background:rgba(26,31,43,.9);border:1px solid var(--line2);
+    color:#9aa3b7;font-size:16px;cursor:pointer}
+  .pclose:hover{color:#fff;border-color:var(--acc)}
+  .trow{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:8px 0}
+  .pbody{font-size:12px;color:#8b93a8;line-height:1.8}
+  .mini{font-size:11.5px;color:#7f879a;line-height:1.65}
+  .mini.hot{color:#9d94c8;line-height:2}
+  .danger{color:#ff9d9d!important;border-color:rgba(255,110,110,.35)!important}
+  .danger:hover{background:rgba(255,90,90,.14)!important;border-color:rgba(255,110,110,.7)!important}
+  .ipt{background:#0f131b;border:1px solid rgba(62,72,94,.9);color:#dfe5f2;border-radius:8px;
+    padding:7px 10px;font-size:12.5px;outline:none}
+  .ipt:focus{border-color:rgba(139,125,255,.8)}
+  .ipt.tiny{width:64px}
+  .toolgrid{display:grid;grid-template-columns:1fr;gap:8px}
+  .tool{display:flex;align-items:center;gap:12px;text-align:left;background:rgba(20,24,33,.7);
+    border:1px solid var(--line2);border-radius:12px;padding:11px 13px;color:#dfe5f2;cursor:pointer}
+  .tool:hover{border-color:rgba(139,108,255,.7);background:rgba(139,108,255,.1)}
+  .tool .ti{font-size:21px;color:#b6a8ff;width:28px;text-align:center}
+  .tool b{display:block;font-size:13px}
+  .tool em{display:block;font-style:normal;font-size:11px;color:#7f879a;margin-top:3px}
+  .toolsec{border-top:1px dashed rgba(70,80,105,.55);margin-top:15px;padding-top:13px}
+  .tsh{font-size:11px;letter-spacing:1.2px;color:#8d96ad;margin:10px 0 7px}
+  .prog{height:6px;border-radius:99px;background:rgba(255,255,255,.06);overflow:hidden;margin:9px 0 5px}
+  .prog i{display:block;height:100%;width:0;background:linear-gradient(90deg,#8b6cff,#4bd1c4);transition:width .25s}
+  .plist{max-height:56vh;overflow:auto;margin-top:10px}
+  .dupetabs{display:flex;gap:8px;margin-top:12px;border-bottom:1px solid rgba(70,80,105,.4);padding-bottom:8px}
+  .dt{background:transparent;border:0;color:#8b93a8;font-size:12.5px;padding:6px 10px;cursor:pointer;border-radius:7px}
+  .dt.on{color:#fff;background:rgba(139,108,255,.16)}
+  .dt s{text-decoration:none;color:#6d7588;font-size:10px;margin-left:3px}
+  .trashrow{display:flex;align-items:center;gap:10px;padding:9px 10px;border-bottom:1px solid rgba(60,70,92,.35);font-size:12px}
+  .trashrow input{accent-color:#8b7cff}
+  .trashrow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#dfe5f2}
+  .trashrow .p{flex:2;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#6f778b;font-size:11px}
+  .trashrow .sz{color:#9aa3b8;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .trashrow button{background:rgba(26,31,43,.9);border:1px solid var(--line2);color:#dfe5f2;
+    border-radius:7px;padding:4px 10px;font-size:11px;cursor:pointer}
+  .dg{border:1px solid rgba(60,70,92,.55);border-radius:12px;margin-bottom:12px;overflow:hidden}
+  .dgh{display:flex;align-items:center;gap:10px;padding:8px 11px;background:rgba(20,24,33,.6);font-size:12px}
+  .dgh b{color:#e7ecf6}.dgh .mini{flex:1}
+  .dgh button{background:rgba(26,31,43,.9);border:1px solid var(--line2);color:#dfe5f2;
+    border-radius:7px;padding:4px 10px;font-size:11px;cursor:pointer}
+  .dgs{display:flex;gap:8px;padding:9px;overflow-x:auto}
+  .dgc{width:150px;flex:0 0 150px;position:relative}
+  .dgc img{width:150px;height:110px;object-fit:cover;border-radius:8px;background:#11151d;display:block}
+  .dgc .cap{font-size:10.5px;color:#9aa3b8;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dgc.keep{outline:2px solid rgba(75,209,196,.8);outline-offset:2px;border-radius:8px}
+  .dgc .kp{position:absolute;left:6px;top:6px;font-size:10px;background:rgba(20,120,100,.85);color:#fff;border-radius:5px;padding:2px 6px}
+  .dgc input{position:absolute;right:6px;top:6px;accent-color:#8b7cff}
+  .tagbox{display:flex;gap:7px;flex-wrap:wrap;min-height:44px;padding:10px;background:rgba(15,19,27,.7);
+    border:1px solid rgba(62,72,94,.6);border-radius:10px;margin-bottom:10px}
+  .tagbox label{cursor:pointer;font-size:12px;border:1px solid rgba(255,158,92,.25);color:#cbb7a8;
+    background:rgba(255,158,92,.08);border-radius:999px;padding:5px 11px}
+  .tagbox label input{display:none}
+  .tagbox label.on{background:rgba(255,158,92,.22);border-color:rgba(255,158,92,.8);color:#fff}
+  .tagbox .none{color:#606879;font-size:12px}
+  .opsec{border-top:1px dashed rgba(70,80,105,.55);padding-top:4px;margin-top:10px}
+  .opsec:first-of-type{border-top:0}
 </style>
 </head>
 <body>
@@ -258,7 +340,7 @@
     <button class="ghost" id="back" style="display:none">← 回相册</button>
     <div class="search">
       <svg viewBox="0 0 24 24" fill="none" stroke="#8b93a8" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20.5 20.5l-4-4"/></svg>
-      <input id="q" placeholder="搜文件名或路径，例如 气球 / 截图 / 头像">
+      <input id="q" placeholder="搜文件名、路径或内容，例如 气球 / 充值 / 角色名">
     </div>
     <select id="sortsel" class="sel">
       <option value="time">按时间</option>
@@ -267,10 +349,12 @@
     </select>
     <button class="ghost" id="selmode">批量选择</button>
     <button class="ghost" id="reset">重置</button>
+    <button class="ghost" id="toolsbtn">工具</button>
   </div>
   <div class="bar" id="chips"></div>
   <div class="bar" id="diskchips" style="display:none"></div>
   <div class="bar subs" id="subchips" style="display:none"></div>
+  <div class="bar tags" id="tagchips" style="display:none"></div>
 </header>
 
 <main>
@@ -288,13 +372,15 @@
   <span>只索引、不复制，文件仍在原位</span>
   <span>单击选中 · 双击打开 · 右键更多操作</span>
   <span>Ctrl+滚轮 缩放界面</span>
+  <span>Ctrl+Alt+Space 唤起搜索</span>
   <span>后台每 15 分钟自动补扫，新素材自动出现</span>
-  <span style="margin-left:auto;color:#3f4657">素材坞 v1.5 · 本地运行</span>
+  <span style="margin-left:auto;color:#3f4657">素材坞 v1.6 · 本地运行</span>
 </footer>
 
 <div id="batchbar">
   <b id="bcount">已选 0 项</b>
-  <span class="hint">右键任一选中项 → 删除</span>
+  <span class="hint">右键任一选中项 → 删除 · 整理</span>
+  <button id="bops">整理选中…</button>
   <button id="bclear">退出多选</button>
 </div>
 
@@ -310,6 +396,8 @@
     <div class="vn" id="vname">—</div>
     <div class="vm" id="vmeta"></div>
     <div class="sp"></div>
+    <button id="vstar" title="收藏 / 取消收藏">☆ 收藏</button>
+    <button id="vtag" title="给这张素材加标签"># 标签</button>
     <button id="vsystem">用系统程序打开</button>
     <button id="vreveal2">定位</button>
     <button id="vclose">关闭 ✕</button>
@@ -353,12 +441,105 @@
 </div>
 <div class="toast" id="toast"></div>
 
+<!-- 工具抽屉 -->
+<div id="toolpanel" class="panel">
+  <div class="pbox narrow">
+    <div class="phead"><b>工具与维护</b><button class="pclose" data-close="toolpanel">✕</button></div>
+    <div class="toolgrid">
+      <button class="tool" id="open-trash"><span class="ti">🗑</span><span><b>待删除箱</b><em id="trashcnt">0 项 · 可还原</em></span></button>
+      <button class="tool" id="open-dupe"><span class="ti">⧉</span><span><b>重复与相似</b><em>清理占空间的重复图</em></span></button>
+      <button class="tool" id="open-content"><span class="ti">⌕</span><span><b>内容索引</b><em>OCR 截图、PDF 正文</em></span></button>
+    </div>
+    <div class="toolsec" id="contentsec">
+      <div class="tsh">内容索引 <span id="ocrstat" class="mini"></span></div>
+      <div class="trow">
+        <button class="ghost" id="content-smart">索引截图/文档</button>
+        <button class="ghost" id="content-all">索引全部图片</button>
+        <button class="ghost" id="content-stop">停止</button>
+      </div>
+      <div class="prog"><i id="contentbar"></i></div>
+      <div class="mini" id="contentmsg">索引后可以直接搜截图里的文字。</div>
+    </div>
+    <div class="toolsec">
+      <div class="tsh">快捷操作</div>
+      <div class="mini hot">Ctrl+Alt+Space 唤起窗口并聚焦搜索<br>Ctrl+滚轮 缩放界面 · 右键卡片看更多</div>
+    </div>
+  </div>
+</div>
+
+<!-- 待删除箱 -->
+<div id="trashpanel" class="panel">
+  <div class="pbox wide">
+    <div class="phead"><b>待删除箱</b><span class="mini" id="trashsum"></span><button class="pclose" data-close="trashpanel">✕</button></div>
+    <div class="trow">
+      <button class="ghost" id="trrestore">还原选中</button>
+      <button class="ghost danger" id="trclear">清空待删除</button>
+      <span class="mini">文件会保留 7 天，之后自动清理；还原会放回原目录。</span>
+    </div>
+    <div class="plist" id="trashlist"></div>
+  </div>
+</div>
+
+<!-- 重复清理 -->
+<div id="dupepanel" class="panel">
+  <div class="pbox wide">
+    <div class="phead"><b>重复与相似素材</b><span class="mini" id="dupesum"></span><button class="pclose" data-close="dupepanel">✕</button></div>
+    <div class="trow">
+      <button class="ghost" id="dupe-run">开始分析</button>
+      <button class="ghost" id="dupe-clean">清理完全重复项</button>
+      <span class="mini">保留分辨率最高/最新的；首次分析小图和已有缩略图的图</span>
+    </div>
+    <div class="prog"><i id="dupebar"></i></div>
+    <div class="dupetabs">
+      <button class="dt on" data-t="exact">完全重复 <s id="exactn">0</s></button>
+      <button class="dt" data-t="similar">相似图片 <s id="simn">0</s></button>
+    </div>
+    <div class="plist" id="dupelist"></div>
+  </div>
+</div>
+
+<!-- 批量整理 -->
+<div id="opsdlg" class="panel">
+  <div class="pbox">
+    <div class="phead"><b>整理选中的 <span id="opscount">0</span> 项</b><button class="pclose" data-close="opsdlg">✕</button></div>
+    <div class="opsec">
+      <div class="tsh">批量重命名</div>
+      <div class="trow"><input id="rnpattern" class="ipt" value="{name}" placeholder="{name} {n} {date}">
+      <input id="rnstart" class="ipt tiny" value="1" title="起始序号"><button class="ghost" id="rnbtn">执行</button></div>
+      <div class="mini">可用 {name} 原名、{n} 序号、{date} 日期；扩展名会自动保留。</div>
+    </div>
+    <div class="opsec">
+      <div class="tsh">移动到目录</div>
+      <div class="trow"><input id="mvdest" class="ipt" placeholder="完整路径，例如 D:\素材\气球">
+      <label class="mini"><input type="checkbox" id="mvmkdir"> 不存在就创建</label><button class="ghost" id="mvbtn">移动</button></div>
+    </div>
+    <div class="opsec">
+      <div class="tsh">压缩 / 转 WebP</div>
+      <div class="trow"><select id="cvquality" class="sel"><option value="90">高质量 90</option><option value="82" selected>均衡 82</option><option value="72">小体积 72</option></select>
+      <input id="cvdest" class="ipt" placeholder="输出目录（留空=原目录）"><button class="ghost" id="cvbtn">转换</button></div>
+      <div class="mini">只处理图片，原图保留；转换完成后可再用重复清理删原图。</div>
+    </div>
+  </div>
+</div>
+
+<!-- 标签 -->
+<div id="tagdlg" class="panel">
+  <div class="pbox narrow">
+    <div class="phead"><b>标签</b><span class="mini" id="tagwho"></span><button class="pclose" data-close="tagdlg">✕</button></div>
+    <div class="tagbox" id="tagbox"></div>
+    <div class="trow"><input id="tagnew" class="ipt" placeholder="新标签，例如 待用 / 气球 / UI"><button class="ghost" id="tagaddnew">添加</button></div>
+    <div class="odb"><button class="ghost" data-close="tagdlg">取消</button><button class="ghost" id="tagsave">保存</button></div>
+  </div>
+</div>
+
 <script>
 const PAGE = 120;
 const S = {view:'albums', type:'全部', cat:'全部', loc:'全部', disk:'', sub:'', ext:'', recent:'', q:'', sort:'time',
-           offset:0, total:0, loading:false, end:false, seq:0, lastMonth:'', title:'全部素材', items:[]};
+           orient:'', alpha:'', tag:'', fav:'', durmax:'', offset:0, total:0, loading:false, end:false, seq:0,
+           lastMonth:'', title:'全部素材', items:[]};
 let ALB = [];
 let SUBS = [];
+let FACETS = {tags:[], fav:0, trash:0};
 const grid = document.getElementById('grid');
 const more = document.getElementById('more');
 const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -368,6 +549,7 @@ function toast(m){ const t=document.getElementById('toast'); t.textContent=m; t.
 
 async function loadFacets(){
   const r = await fetch('/api/facets?type=' + encodeURIComponent(S.type)).then(r=>r.json());
+  FACETS = r;
   const m = r.media || {};
   document.getElementById('stats').innerHTML =
     '<span class="pill">全部<b>'+num(r.total)+'</b></span>' +
@@ -386,10 +568,40 @@ async function loadFacets(){
   S.disks = r.disks || [];
   renderDiskChips();
   renderSubchips();
+  renderTagChips();
+  document.getElementById('trashcnt').textContent = num(r.trash||0) + ' 项 · 可还原';
   const sel = document.getElementById('locsel');
   if (sel) sel.innerHTML = '<option value="全部">全部位置</option>' + r.locs.map(l =>
     '<option value="'+esc(l.k)+'">'+esc(l.k)+' ('+num(l.n)+')</option>').join('');
 }
+
+/* 标签、收藏与常用属性筛选 */
+function renderTagChips(){
+  const box = document.getElementById('tagchips');
+  const tags = (FACETS.tags || []).slice(0, 28);
+  let h = '<span class="lab">标签</span>' +
+    '<button class="chip fav'+(S.fav?' on':'')+'" data-tagfav="1">★ 收藏<i>'+num(FACETS.fav||0)+'</i></button>';
+  h += tags.map(t => '<button class="chip t'+(S.tag===t.name?' on':'')+'" data-tag="'+esc(t.name)+'">#'+esc(t.name)+'<i>'+num(t.n)+'</i></button>').join('');
+  h += '<span class="lab" style="margin-left:8px">属性</span>' +
+    '<button class="chip'+(S.orient==='square'?' on':'')+'" data-prop="orient" data-v="square">方图</button>' +
+    '<button class="chip'+(S.orient==='portrait'?' on':'')+'" data-prop="orient" data-v="portrait">竖图</button>' +
+    '<button class="chip'+(S.orient==='landscape'?' on':'')+'" data-prop="orient" data-v="landscape">横图</button>' +
+    '<button class="chip'+(S.alpha?' on':'')+'" data-prop="alpha" data-v="1">透明底</button>' +
+    '<button class="chip'+(S.durmax==='15'?' on':'')+'" data-prop="durmax" data-v="15">短视频</button>';
+  box.innerHTML = h;
+  box.style.display = '';
+}
+
+document.getElementById('tagchips').addEventListener('click', e => {
+  const b = e.target.closest('.chip'); if (!b) return;
+  if (b.dataset.tagfav) S.fav = S.fav ? '' : '1';
+  else if (b.dataset.tag) S.tag = S.tag === b.dataset.tag ? '' : b.dataset.tag;
+  else if (b.dataset.prop === 'orient') S.orient = S.orient === b.dataset.v ? '' : b.dataset.v;
+  else if (b.dataset.prop === 'alpha') S.alpha = S.alpha ? '' : '1';
+  else if (b.dataset.prop === 'durmax') S.durmax = S.durmax ? '' : b.dataset.v;
+  S.title = S.tag ? ('#' + S.tag) : (S.fav ? '★ 我的收藏' : (S.orient || S.alpha || S.durmax ? '属性筛选' : S.title));
+  showGrid(); refreshChips(); renderTagChips(); resetAndLoad();
+});
 
 /* 磁盘筛选：只影响浏览范围，不删任何文件 */
 function renderDiskChips(){
@@ -454,9 +666,10 @@ async function loadAlbums(){
 function applyAlbum(a){
   const sp = a.spec || {};
   S.type = sp.type || '全部'; S.cat = sp.cat || '全部'; S.sub = sp.sub || ''; S.ext = sp.ext || ''; S.recent = sp.recent || '';
+  S.tag = sp.tag || ''; S.fav = sp.fav || ''; S.orient = ''; S.alpha = ''; S.durmax = '';
   S.loc = '全部'; S.q = ''; document.getElementById('q').value = '';
   S.title = a.name;
-  showGrid(); refreshChips(); resetAndLoad(); renderSubchips();
+  showGrid(); refreshChips(); resetAndLoad(); renderSubchips(); renderTagChips();
 }
 
 document.getElementById('albums').addEventListener('click', e => {
@@ -476,6 +689,13 @@ function refreshChips(){
   });
   document.querySelectorAll('#diskchips .chip').forEach(c => {
     c.classList.toggle('on', (c.dataset.d || '') === (S.disk || ''));
+  });
+  document.querySelectorAll('#tagchips .chip').forEach(c => {
+    if (c.dataset.tagfav) c.classList.toggle('on', !!S.fav);
+    else if (c.dataset.tag) c.classList.toggle('on', c.dataset.tag === S.tag);
+    else if (c.dataset.prop === 'orient') c.classList.toggle('on', c.dataset.v === S.orient);
+    else if (c.dataset.prop === 'alpha') c.classList.toggle('on', !!S.alpha);
+    else if (c.dataset.prop === 'durmax') c.classList.toggle('on', c.dataset.v === S.durmax);
   });
 }
 
@@ -498,9 +718,10 @@ document.getElementById('back').onclick = () => { showAlbums(); S.q=''; document
 document.getElementById('sortsel').addEventListener('change', e => { S.sort = e.target.value; resetAndLoad(); });
 document.getElementById('reset').addEventListener('click', () => {
   S.type='全部'; S.cat='全部'; S.loc='全部'; S.disk=''; S.sub=''; S.ext=''; S.recent=''; S.q=''; S.sort='time'; S.title='全部素材';
+  S.tag=''; S.fav=''; S.orient=''; S.alpha=''; S.durmax='';
   document.getElementById('q').value=''; document.getElementById('sortsel').value='time';
   selSet.clear(); batchMode=false; paintSel();
-  refreshChips(); showAlbums();
+  refreshChips(); renderTagChips(); showAlbums();
 });
 
 /* 批量选择 / 批量删除（删除进回收站） */
@@ -513,19 +734,20 @@ document.getElementById('selmode').addEventListener('click', () => {
 document.getElementById('bclear').addEventListener('click', () => {
   selSet.clear(); batchMode = false; paintSel();
 });
+document.getElementById('bops').addEventListener('click', () => { if (selSet.size) openOps(); else toast('先选中素材'); });
 let deletingSel = false;
 async function deleteSelected(){
   const ids = [...selSet];
   if (!ids.length || deletingSel) return;
-  const ok = await opDialog('删除选中的 ' + ids.length + ' 个文件',
-    '这些文件会移到系统回收站，索引记录一起移除。这个操作只能从回收站还原，确认删除？',
-    null, '移到回收站', true);
+  const ok = await opDialog('把选中的 ' + ids.length + ' 个文件移到待删除箱',
+    '文件不会立刻永久删除，会先放进取回的“待删除箱”保留 7 天，期间可以还原。确认继续？',
+    null, '移到待删除箱', true);
   if (!ok) return;
   deletingSel = true;
   try {
-    const r = await fetch('/api/batchdelete?ids=' + ids.join(','), {method:'POST'}).then(x => x.json());
+    const r = await fetch('/api/trash/add?ids=' + ids.join(','), {method:'POST'}).then(x => x.json());
     if (r.ok) {
-      toast('已移到回收站：' + r.deleted + ' 个' + (r.failed && r.failed.length ? '，失败 ' + r.failed.length : ''));
+      toast('已移入待删除箱：' + r.moved + ' 个 · Ctrl+Z 撤销');
       selSet.clear(); batchMode = false; paintSel();
       loadFacets();
       if (S.view === 'grid') resetAndLoad(); else showAlbums();
@@ -538,6 +760,14 @@ async function deleteSelected(){
     deletingSel = false;
   }
 }
+document.addEventListener('keydown', async e => {
+  if (!(e.ctrlKey && e.key.toLowerCase() === 'z')) return;
+  if (document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
+  e.preventDefault();
+  const r = await fetch('/api/trash/undo', {method:'POST'}).then(x=>x.json()).catch(()=>({ok:false}));
+  toast(r.ok ? ('已撤销，还原 ' + r.restored + ' 个') : (r.msg || '没有可撤销的删除'));
+  if (r.ok) { loadFacets(); if (S.view === 'grid') resetAndLoad(); else showAlbums(); }
+});
 let qt;
 document.getElementById('q').addEventListener('input', e => {
   clearTimeout(qt); qt = setTimeout(() => {
@@ -561,7 +791,8 @@ function tile(d){
   let badge = '';
   if (d.media === '视频') badge = '<i class="play">▶</i>';
   else if (d.media === '音频') badge = '<i class="play">♪</i>';
-  return '<div class="thumb"><img loading="lazy" src="/thumb/'+d.id+'" alt="" onerror="this.style.display=\'none\';this.parentNode.querySelector(\'.ph\').style.display=\'flex\'"><span class="ph" style="display:none">▨</span>' + badge + '<span class="tag">'+ext+'</span></div>';
+  return '<div class="thumb"><img loading="lazy" src="/thumb/'+d.id+'" alt="" onerror="this.style.display=\'none\';this.parentNode.querySelector(\'.ph\').style.display=\'flex\'"><span class="ph" style="display:none">▨</span>' + badge +
+    '<span class="tag">'+ext+'</span><span class="star'+(d.fav?' on':'')+'" data-fav="'+d.id+'" title="收藏 / 取消收藏">★</span></div>';
 }
 
 function monthOf(ms){
@@ -574,9 +805,10 @@ function dayOf(ms){
 }
 
 function card(d){
+  const tg = (d.tags && d.tags.length) ? '<div class="tg">'+d.tags.slice(0,3).map(t=>'<i>#'+esc(t)+'</i>').join('')+'</div>' : '';
   return '<div class="card" data-id="'+d.id+'">'+tile(d)+
     '<div class="info"><div class="nm" title="'+esc(d.path)+'">'+esc(d.name)+'</div>'+
-    '<div class="sub">'+esc(d.cat)+(d.sub? ' · <b style="color:#7fd6cb;font-weight:500">'+esc(d.sub)+'</b>':'')+' · '+dayOf(d.mtime)+' · '+kb(d.size)+'<br><em>'+esc(d.loc)+'</em></div></div></div>';
+    '<div class="sub">'+esc(d.cat)+(d.sub? ' · <b style="color:#7fd6cb;font-weight:500">'+esc(d.sub)+'</b>':'')+' · '+dayOf(d.mtime)+' · '+kb(d.size)+'<br><em>'+esc(d.loc)+'</em></div>'+tg+'</div></div>';
 }
 
 async function loadMore(){
@@ -584,7 +816,8 @@ async function loadMore(){
   S.loading = true;
   const seq = S.seq;
   const qs = new URLSearchParams({type:S.type, cat:S.cat, loc:S.loc, disk:S.disk, sub:S.sub, q:S.q, sort:S.sort,
-                                  ext:S.ext, recent:S.recent, offset:S.offset, limit:PAGE});
+                                  ext:S.ext, recent:S.recent, tag:S.tag, fav:S.fav, orient:S.orient,
+                                  alpha:S.alpha, durmax:S.durmax, offset:S.offset, limit:PAGE});
   try {
     const r = await fetch('/api/items?'+qs).then(r=>r.json());
     if (seq !== S.seq) return;
@@ -673,6 +906,10 @@ function selectRange(id){
 grid.addEventListener('click', e => {
   const c = e.target.closest('.card'); if (!c) return;
   const id = +c.dataset.id;
+  if (e.target.closest('.star')) {
+    toggleFav([id]);
+    return;
+  }
   if (batchMode || e.ctrlKey || e.metaKey) {
     if (!batchMode) { batchMode = true; }
     setSel(id, true);
@@ -830,7 +1067,8 @@ function loadViewer(){
   const bar = document.getElementById('vmeta');
   document.getElementById('vname').textContent = it.name;
   bar.textContent = '第 ' + (vs.idx + 1) + ' / ' + vs.ids.length + ' 张 · ' + (it.ext||'').replace('.','').toUpperCase() +
-    ' · ' + kb(it.size) + ' · ' + it.cat + (it.sub ? ' · ' + it.sub : '');
+    ' · ' + kb(it.size) + ' · ' + it.cat + (it.sub ? ' · ' + it.sub : '') + (it.tags && it.tags.length ? ' · #' + it.tags.join(' #') : '');
+  document.getElementById('vstar').textContent = (it.fav ? '★ 已收藏' : '☆ 收藏');
   vimg.style.opacity = 0; vimg.style.transform = '';
   vimg.onload = () => {
     vs.w = vimg.naturalWidth; vs.h = vimg.naturalHeight;
@@ -908,6 +1146,8 @@ document.getElementById('vprev').onclick = () => stepViewer(-1);
 document.getElementById('vnext').onclick = () => stepViewer(1);
 document.getElementById('vsystem').onclick = () => { if (vId) act('open', vId); };
 document.getElementById('vreveal2').onclick = () => { if (vId) act('reveal', vId); };
+document.getElementById('vstar').onclick = () => { if (vId) toggleFav([vId]); };
+document.getElementById('vtag').onclick = () => { if (vId) openTagDialog([vId], itemOf(vId)); };
 vw.addEventListener('click', e => { if (e.target.id === 'vw') closeViewer(); });
 window.addEventListener('resize', () => { if (vw.classList.contains('on')) fitView(); });
 
@@ -988,14 +1228,14 @@ async function renameItem(id){
 
 async function deleteItem(id){
   const it = itemOf(id); if (!it) return;
-  const ok = await opDialog('删除文件', '把「' + it.name + '」移到回收站？原文件会从磁盘上消失，需要的话可以从回收站还原。', null, '移到回收站', true);
+  const ok = await opDialog('移到待删除箱', '把「' + it.name + '」放进待删除箱？文件会保留 7 天，期间可以还原；不会立刻永久删除。', null, '移到待删除箱', true);
   if (!ok) return;
-  const r = await fetch('/api/delete/' + id, {method:'POST'}).then(r=>r.json()).catch(()=>({ok:false,msg:'请求失败'}));
+  const r = await fetch('/api/trash/add?ids=' + id, {method:'POST'}).then(r=>r.json()).catch(()=>({ok:false,msg:'请求失败'}));
   if (!r.ok) { toast('删除失败：' + (r.msg||'')); return; }
   S.items = S.items.filter(x => x.id !== id);
   const c = cardNode(id); if (c) c.remove();
   if (vId === id) { const b = document.getElementById('vclose'); if (b) b.click(); }
-  toast(r.msg || '已移到回收站');
+  toast('已移入待删除箱 · Ctrl+Z 撤销');
   loadFacets();
 }
 function showCtx(id, x, y){
@@ -1005,17 +1245,20 @@ function showCtx(id, x, y){
     ['用系统程序打开', '', () => act('open', id)],
     ['在资源管理器中定位', '', () => act('reveal', id)],
     ['-'],
+    [it.fav ? '★ 取消收藏' : '☆ 收藏', '', () => toggleFav([id])],
+    ['标签…', (it.tags && it.tags.length ? '#'+it.tags.join(' #') : ''), () => openTagDialog([id], it)],
+    ['-'],
     ['复制', '到剪贴板', () => clipItem('copyclip', id)],
     ['剪切', '到剪贴板', () => clipItem('cutclip', id)],
     ['重命名…', '', () => renameItem(id)],
-    ['删除', '移到回收站', () => deleteItem(id), 'danger'],
+    ['删除', '移到待删除箱', () => deleteItem(id), 'danger'],
     ['-'],
     ['复制完整路径', '', () => copyText(it.path, '已复制路径')],
     ['复制文件名', '', () => copyText(it.name, '已复制文件名')],
     ['-'],
     ['属性信息', '', () => toast(it.name + ' · ' + (it.w ? it.w+'×'+it.h : '尺寸未知') + ' · ' + kb(it.size) + ' · ' + it.ext)],
     ['-'],
-    ['多选（批量删除）…', '右键进入多选', () => { batchMode = true; selSet.clear(); selSet.add(id); lastPick = id; paintSel(); toast('多选已开启：点其他卡片继续选，右键选中项可删除'); }],
+    ['多选（批量删除/整理）…', '右键进入多选', () => { batchMode = true; selSet.clear(); selSet.add(id); lastPick = id; paintSel(); toast('多选已开启：点其他卡片继续选，右键选中项可删除或整理'); }],
   ];
   ctx.innerHTML = rows.map((r, i) => r[0] === '-'
     ? '<hr>'
@@ -1032,11 +1275,14 @@ function showBatchCtx(id, x, y){
   const n = selSet.size;
   const picked = selSet.has(id);
   const rows = picked ? [
-    ['删除选中的 ' + n + ' 项', '移到回收站（需确认）', deleteSelected, 'danger'],
+    ['整理选中的 ' + n + ' 项…', '重命名 / 移动 / 压缩', () => openOps(), ''],
+    ['加标签…', '', () => openTagDialog([...selSet], null)],
+    ['收藏选中项', '', () => toggleFav([...selSet], true)],
+    ['删除选中的 ' + n + ' 项', '移到待删除箱（需确认）', deleteSelected, 'danger'],
     ['取消选中该项', '', () => { selSet.delete(id); paintSel(); }],
     ['退出多选', '', () => { batchMode = false; selSet.clear(); paintSel(); }],
   ] : [
-    ['选中该项', '再右键它才能删除', () => { selSet.add(id); lastPick = id; paintSel(); }],
+    ['选中该项', '再右键它才能删除或整理', () => { selSet.add(id); lastPick = id; paintSel(); }],
     ['退出多选', '', () => { batchMode = false; selSet.clear(); paintSel(); }],
   ];
   ctx.innerHTML = rows.map((r, i) => r[0] === '-'
@@ -1106,9 +1352,270 @@ function zStep(d){ zApply(Z.cur + d, true); }
   });
 })();
 
+/* ================= v1.6 工具面板 ================= */
+function openPanel(id){
+  document.querySelectorAll('.panel.on').forEach(p => { if (p.id !== id) p.classList.remove('on'); });
+  document.getElementById(id).classList.add('on');
+}
+function closePanel(id){ const p=document.getElementById(id); if(p) p.classList.remove('on'); }
+document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => closePanel(b.dataset.close));
+document.querySelectorAll('.panel').forEach(p => p.addEventListener('click', e => { if (e.target === p) p.classList.remove('on'); }));
+document.getElementById('toolsbtn').onclick = () => { openPanel('toolpanel'); pollContent(); };
+document.getElementById('open-trash').onclick = () => { openPanel('trashpanel'); loadTrash(); };
+document.getElementById('open-dupe').onclick = () => { openPanel('dupepanel'); loadDupes(); };
+document.getElementById('open-content').onclick = () => { pollContent(); document.getElementById('contentsec').scrollIntoView({block:'center'}); };
+
+function patchItem(id, fn){
+  const it = itemOf(id);
+  if (it) fn(it);
+}
+async function toggleFav(ids, force){
+  const one = ids.length === 1 ? itemOf(ids[0]) : null;
+  const on = (force === undefined) ? !(one && one.fav) : !!force;
+  const r = await fetch('/api/fav?ids=' + ids.join(',') + '&on=' + (on?1:0), {method:'POST'})
+    .then(x=>x.json()).catch(()=>({ok:false}));
+  if (!r.ok) { toast('收藏失败'); return; }
+  ids.forEach(id => {
+    patchItem(id, it => { it.fav = on; });
+    const c = cardNode(id);
+    if (c) { const s=c.querySelector('.star'); if(s) s.classList.toggle('on', on); }
+  });
+  if (vId && ids.includes(vId)) document.getElementById('vstar').textContent = on ? '★ 已收藏' : '☆ 收藏';
+  toast(on ? ('已收藏 ' + ids.length + ' 项') : '已取消收藏');
+  loadFacets().then(renderTagChips);
+}
+
+/* ---------- 标签 ---------- */
+let tagIds = [], tagCommon = new Set(), tagPicked = new Set(), tagKnown = new Set();
+async function openTagDialog(ids, it){
+  tagIds = ids.slice();
+  document.getElementById('tagwho').textContent = ids.length === 1 ? (it ? it.name : '') : ('已选 ' + ids.length + ' 项');
+  const all = await fetch('/api/tags').then(r=>r.json()).catch(()=>({tags:[]}));
+  tagKnown = new Set((all.tags||[]).map(t=>t.name));
+  const sets = await Promise.all(ids.map(id => fetch('/api/itemtags/'+id).then(r=>r.json()).catch(()=>({tags:[]}))));
+  tagCommon = new Set(sets.length ? sets[0].tags : []);
+  sets.slice(1).forEach(s => { const cur=new Set(s.tags||[]); tagCommon = new Set([...tagCommon].filter(x=>cur.has(x))); });
+  tagPicked = new Set(tagCommon);
+  drawTagBox();
+  document.getElementById('tagnew').value = '';
+  openPanel('tagdlg');
+}
+function drawTagBox(){
+  const names = [...new Set([...tagKnown, ...tagPicked])].sort((a,b)=>a.localeCompare(b,'zh'));
+  const box = document.getElementById('tagbox');
+  if (!names.length) { box.innerHTML = '<span class="none">还没有标签，在下面新建一个。</span>'; return; }
+  box.innerHTML = names.map(n => '<label class="'+(tagPicked.has(n)?'on':'')+'" data-tag="'+esc(n)+'"><input type="checkbox" '+(tagPicked.has(n)?'checked':'')+'>#'+esc(n)+'</label>').join('');
+}
+document.getElementById('tagbox').addEventListener('click', e => {
+  const l = e.target.closest('label'); if (!l) return;
+  e.preventDefault();
+  const n = l.dataset.tag;
+  if (tagPicked.has(n)) tagPicked.delete(n); else tagPicked.add(n);
+  l.classList.toggle('on', tagPicked.has(n));
+});
+document.getElementById('tagaddnew').onclick = () => {
+  const n = document.getElementById('tagnew').value.trim();
+  if (!n) return;
+  if (n.length > 24) { toast('标签最多 24 个字'); return; }
+  tagKnown.add(n); tagPicked.add(n); drawTagBox();
+  document.getElementById('tagnew').value = '';
+};
+document.getElementById('tagnew').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('tagaddnew').click(); });
+document.getElementById('tagsave').onclick = async () => {
+  const toAdd = [...tagPicked].filter(n => !tagCommon.has(n));
+  const toDel = [...tagCommon].filter(n => !tagPicked.has(n));
+  for (const n of toAdd) await fetch('/api/tag/add?ids='+tagIds.join(',')+'&name='+encodeURIComponent(n), {method:'POST'});
+  for (const n of toDel) await fetch('/api/tag/remove?ids='+tagIds.join(',')+'&name='+encodeURIComponent(n), {method:'POST'});
+  closePanel('tagdlg');
+  toast('标签已更新');
+  loadFacets().then(renderTagChips);
+  S.seq++; resetAndLoad();
+};
+
+/* ---------- 待删除箱 ---------- */
+let trashSel = new Set();
+async function loadTrash(){
+  const r = await fetch('/api/trash').then(x=>x.json()).catch(()=>({items:[]}));
+  const items = r.items || [];
+  trashSel = new Set(items.map(x=>x.id));
+  document.getElementById('trashsum').textContent = items.length + ' 项 · ' + kb(r.bytes||0) + ' · 保留 7 天';
+  document.getElementById('trashlist').innerHTML = items.length ? items.map(x =>
+    '<div class="trashrow"><input type="checkbox" data-tid="'+x.id+'" checked>'+
+    '<div class="nm" title="'+esc(x.path)+'">'+esc(x.name)+'</div>'+
+    '<div class="p" title="'+esc(x.path)+'">'+esc(x.path)+'</div>'+
+    '<div class="sz">'+kb(x.size)+' · '+Math.max(0,Math.ceil(((x.expire_at||0)-Date.now()/1000)/86400))+' 天后清理</div>'+
+    '<button data-restore="'+x.id+'">还原</button></div>').join('')
+    : '<div class="empty" style="margin:40px auto"><h2>待删除箱是空的</h2><p>删除的素材会先放这里，7 天内都能还原。</p></div>';
+  const all = document.getElementById('trashlist').querySelectorAll('input[data-tid]');
+  all.forEach(cb => cb.onchange = () => { const id=+cb.dataset.tid; if(cb.checked) trashSel.add(id); else trashSel.delete(id); });
+  document.getElementById('trashlist').querySelectorAll('[data-restore]').forEach(b => b.onclick = () => restoreTrash([+b.dataset.restore]));
+}
+async function restoreTrash(ids){
+  if (!ids.length) { toast('先勾选要还原的文件'); return; }
+  const r = await fetch('/api/trash/restore?ids='+ids.join(','), {method:'POST'}).then(x=>x.json()).catch(()=>({ok:false}));
+  toast(r.ok ? ('已还原 ' + r.restored + ' 个') : (r.msg || '还原失败'));
+  if (r.ok) { loadTrash(); loadFacets(); if (S.view==='grid') resetAndLoad(); else showAlbums(); }
+}
+document.getElementById('trrestore').onclick = () => restoreTrash([...trashSel]);
+document.getElementById('trclear').onclick = async () => {
+  const ok = await opDialog('清空待删除箱', '这会永久删除待删除箱里的所有文件，不能还原。确定清空？', null, '永久删除', true);
+  if (!ok) return;
+  const r = await fetch('/api/trash/clear', {method:'POST'}).then(x=>x.json());
+  toast('已永久删除 ' + (r.removed||0) + ' 个');
+  loadTrash(); loadFacets();
+};
+
+/* ---------- 重复与相似 ---------- */
+let DUP = {exact:[], similar:[]}, dupTab = 'exact';
+async function loadDupes(){
+  const st = await fetch('/api/dedupe/status').then(r=>r.json()).catch(()=>({job:{}}));
+  paintDupJob(st.job || {});
+  const g = await fetch('/api/dedupe/groups').then(r=>r.json()).catch(()=>({exact:[],similar:[]}));
+  DUP = g;
+  if (!(st.job||{}).running && (g.exact_count || g.similar_count)) {
+    const total = (g.exact_count||0) + (g.similar_count||0);
+    const shown = Math.min(80, g.exact.length||0) + Math.min(80, g.similar.length||0);
+    document.getElementById('dupesum').textContent = '已有分析结果 · ' + total + ' 组' + (shown < total ? '（显示前 80 组）' : '');
+  }
+  paintDupes();
+}
+function paintDupJob(j){
+  const bar = document.getElementById('dupebar');
+  const pct = j.total ? Math.min(100, Math.round((j.done||0)/j.total*100)) : (j.phase==='ready'?100:0);
+  bar.style.width = pct + '%';
+  document.getElementById('dupesum').textContent = j.running ? (j.phase + ' ' + (j.done||0) + '/' + (j.total||0) + ' · ' + (j.msg||'')) : (j.phase==='ready'?'分析完成':(j.msg||'还没分析'));
+}
+function paintDupes(){
+  document.getElementById('exactn').textContent = (DUP.exact_count != null ? DUP.exact_count : (DUP.exact||[]).length);
+  document.getElementById('simn').textContent = (DUP.similar_count != null ? DUP.similar_count : (DUP.similar||[]).length);
+  const list = (DUP[dupTab] || []);
+  const box = document.getElementById('dupelist');
+  if (!list.length) {
+    box.innerHTML = '<div class="empty" style="margin:40px auto"><h2>没有发现'+(dupTab==='exact'?'完全重复':'相似图片')+'</h2><p>可以点上方「开始分析」，或先索引更多素材。</p></div>';
+    return;
+  }
+  box.innerHTML = list.map((g,gi) => {
+    const best = g.items.find(x=>x.id===g.best) || g.items[0];
+    return '<div class="dg"><div class="dgh"><b>'+(g.kind==='exact'?'完全重复':'相似图片')+' · '+g.items.length+' 个</b>'+
+      '<span class="mini">保留 '+esc(best.name)+' · 可释放 '+kb(g.wasted)+'</span>'+
+      '<button data-gclean="'+gi+'">清理其余</button></div><div class="dgs">'+
+      g.items.map(x => '<div class="dgc'+(x.id===best.id?' keep':'')+'"><img loading="lazy" src="/thumb/'+x.id+'">'+
+        (x.id===best.id?'<span class="kp">保留</span>':'')+
+        '<div class="cap" title="'+esc(x.path)+'">'+esc(x.name)+'</div>'+
+        '<div class="cap">'+(x.w?x.w+'×'+x.h:'')+' · '+kb(x.size)+' · '+dayOf(x.mtime)+'</div></div>').join('')+
+      '</div></div>';
+  }).join('');
+  box.querySelectorAll('[data-gclean]').forEach(b => b.onclick = () => {
+    const g = (DUP[dupTab]||[])[+b.dataset.gclean];
+    if (!g) return;
+    cleanGroup(g);
+  });
+}
+async function cleanGroup(g){
+  const ids = g.items.filter(x=>x.id!==g.best).map(x=>x.id);
+  if (!ids.length) return;
+  const ok = await opDialog('清理这组多余项', '保留「'+(g.items.find(x=>x.id===g.best)||{}).name+'」，把其余 '+ids.length+' 个移到待删除箱？可释放约 '+kb(g.wasted)+'。', null, '清理', true);
+  if (!ok) return;
+  const r = await fetch('/api/trash/add?ids='+ids.join(','), {method:'POST'}).then(x=>x.json());
+  toast(r.ok ? ('已清理 '+r.moved+' 个 · 释放约 '+kb(r.bytes||0)+' · Ctrl+Z 撤销') : (r.msg||'清理失败'));
+  if (r.ok) { loadDupes(); loadFacets(); }
+}
+document.querySelectorAll('.dt').forEach(b => b.onclick = () => {
+  dupTab = b.dataset.t; document.querySelectorAll('.dt').forEach(x=>x.classList.toggle('on', x===b)); paintDupes();
+});
+document.getElementById('dupe-run').onclick = async () => {
+  await fetch('/api/dedupe/start', {method:'POST'});
+  toast('已开始后台分析，期间可以继续用电脑');
+  const t = setInterval(async () => {
+    const st = await fetch('/api/dedupe/status').then(r=>r.json()).catch(()=>({job:{}}));
+    paintDupJob(st.job||{});
+    if (!(st.job||{}).running) { clearInterval(t); loadDupes(); toast('分析完成，可以清理了'); }
+  }, 1200);
+};
+document.getElementById('dupe-clean').onclick = async () => {
+  const plan = await fetch('/api/dedupe/plan').then(r=>r.json()).catch(()=>({ok:false}));
+  if (!plan.ok) { toast('清理计划获取失败'); return; }
+  const all = plan.ids || [];
+  if (!all.length) { toast('没有可清理的完全重复项'); return; }
+  const ok = await opDialog('清理完全重复项', '共 '+plan.groups+' 组，把 '+all.length+' 个完全重复的非保留文件移到待删除箱？可释放约 '+kb(plan.bytes||0)+'，每组保留分辨率最高/最新的那张。相似但不完全相同的图片请逐组确认。', null, '清理', true);
+  if (!ok) return;
+  const r = await fetch('/api/trash/add?ids='+all.join(','), {method:'POST'}).then(x=>x.json());
+  toast(r.ok ? ('已清理 '+r.moved+' 个 · 释放约 '+kb(r.bytes||0)+' · Ctrl+Z 撤销') : (r.msg||'清理失败'));
+  if (r.ok) { loadDupes(); loadFacets(); }
+};
+
+/* ---------- 批量整理 ---------- */
+function openOps(){
+  if (!selSet.size) { toast('先选中素材'); return; }
+  document.getElementById('opscount').textContent = selSet.size;
+  openPanel('opsdlg');
+}
+async function batchCall(url){
+  const r = await fetch(url, {method:'POST'}).then(x=>x.json()).catch(()=>({ok:false,msg:'请求失败'}));
+  return r;
+}
+document.getElementById('rnbtn').onclick = async () => {
+  const ids = [...selSet]; if (!ids.length) return;
+  const pattern = document.getElementById('rnpattern').value.trim();
+  if (!pattern) { toast('命名模板不能为空'); return; }
+  const ok = await opDialog('批量重命名', '按模板「'+pattern+'」重命名 '+ids.length+' 个文件？同名会自动加序号，不会覆盖原文件。', null, '重命名', false);
+  if (!ok) return;
+  const r = await batchCall('/api/batchrename?ids='+ids.join(',')+'&pattern='+encodeURIComponent(pattern)+'&start='+(document.getElementById('rnstart').value||1));
+  toast(r.ok ? ('已重命名 '+r.renamed+' 个'+(r.failed.length?'，失败 '+r.failed.length:'')) : (r.msg||'失败'));
+  if (r.ok) { closePanel('opsdlg'); selSet.clear(); batchMode=false; paintSel(); loadFacets(); resetAndLoad(); }
+};
+document.getElementById('mvbtn').onclick = async () => {
+  const ids = [...selSet]; if (!ids.length) return;
+  const dest = document.getElementById('mvdest').value.trim();
+  if (!dest) { toast('请填写目标文件夹完整路径'); return; }
+  const ok = await opDialog('移动文件', '把 '+ids.length+' 个文件移动到：\n'+dest+'\n原位置的文件会消失，确认？', null, '移动', true);
+  if (!ok) return;
+  const mk = document.getElementById('mvmkdir').checked ? 1 : 0;
+  const r = await batchCall('/api/batchmove?ids='+ids.join(',')+'&dest='+encodeURIComponent(dest)+'&mkdir='+mk);
+  toast(r.ok ? ('已移动 '+r.moved+' 个'+(r.failed.length?'，失败 '+r.failed.length:'')) : (r.msg||'失败'));
+  if (r.ok) { closePanel('opsdlg'); selSet.clear(); batchMode=false; paintSel(); loadFacets(); resetAndLoad(); }
+};
+document.getElementById('cvbtn').onclick = async () => {
+  const ids = [...selSet]; if (!ids.length) return;
+  const q = document.getElementById('cvquality').value;
+  const dest = document.getElementById('cvdest').value.trim();
+  const ok = await opDialog('压缩图片', '把选中的图片转成 WebP（质量 '+q+'），原图保留'+(dest?('，输出到：\n'+dest):'，输出到各自原目录')+'。图片多时可能需要一会儿。', null, '开始转换', false);
+  if (!ok) return;
+  toast('正在转换，请稍候…');
+  const r = await batchCall('/api/batchconvert?ids='+ids.join(',')+'&fmt=webp&quality='+q+'&dest='+encodeURIComponent(dest));
+  toast(r.ok ? ('已转换 '+r.converted+' 个，节省 '+kb(r.saved||0)) : (r.msg||'失败'));
+  if (r.ok) { closePanel('opsdlg'); loadFacets(); resetAndLoad(); }
+};
+
+/* ---------- 内容索引 ---------- */
+let contentTimer = null;
+async function pollContent(){
+  const st = await fetch('/api/content/status').then(r=>r.json()).catch(()=>({}));
+  const j = st.job || {};
+  const pct = j.total ? Math.min(100, Math.round((j.done||0)/j.total*100)) : (j.phase==='ready'?100:0);
+  document.getElementById('contentbar').style.width = pct+'%';
+  document.getElementById('ocrstat').textContent = st.ocr ? ('OCR 可用 · 已索引 '+num(st.indexed||0)) : 'OCR 不可用（仅文档正文）';
+  document.getElementById('contentmsg').textContent = j.running ? (j.phase+' '+ (j.done||0)+'/'+(j.total||0)+' · '+(j.msg||'')) : (j.phase==='ready' ? '索引完成，可以直接搜截图里的文字。' : ('索引后可以直接搜截图里的文字。待索引文档 '+num(st.pending_docs||0)));
+  if (j.running && !contentTimer) contentTimer = setInterval(pollContent, 1000);
+  if (!j.running && contentTimer) { clearInterval(contentTimer); contentTimer=null; }
+}
+async function startContent(scope){
+  const r = await fetch('/api/content/start?scope='+scope, {method:'POST'}).then(x=>x.json()).catch(()=>({ok:false}));
+  if (r.ok) { toast(scope==='all'?'已开始索引全部图片，可在后台运行':'已开始索引截图与文档'); pollContent(); }
+  else toast(r.msg || '已经在索引中');
+}
+document.getElementById('content-smart').onclick = () => startContent('smart');
+document.getElementById('content-all').onclick = () => startContent('all');
+document.getElementById('content-stop').onclick = async () => { await fetch('/api/content/stop', {method:'POST'}); toast('已请求停止'); };
+
+/* 全局热键唤起到搜索框 */
+window.focusSearchFromHotkey = function(){
+  const q = document.getElementById('q');
+  if (q) { q.focus(); q.select(); }
+};
+
 (async function(){
-  await loadFacets();
-  await loadAlbums();
+  await Promise.all([loadFacets(), loadAlbums()]);
   const u = new URLSearchParams(location.search);
   const ak = u.get('album');
   if (ak) { const a = ALB.find(x => x.key === ak); if (a) applyAlbum(a); return; }

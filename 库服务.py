@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 素材坞 · 全机素材索引
-只读扫描磁盘上的图片 / 视频 / 音频，建索引并起一个本地网页，支持分类、搜索、缩略图预览、直接打开原文件。
-不复制、不移动、不删除任何用户文件。
+只读扫描磁盘上的图片 / 视频 / 音频 / 文档，建索引并起一个本地网页，支持分类、搜索、缩略图预览、直接打开原文件。
+扫描和浏览不复制、不移动任何用户文件；删除、重命名、批量整理只在你明确确认后执行，删除进入软件待删除箱。
 
 用法：
   python 库服务.py            有索引就开界面，没有就先扫描
@@ -15,6 +15,11 @@ import re
 import sys
 import json
 import time
+import math
+import uuid
+import shutil
+import socket
+import hashlib
 import sqlite3
 import subprocess
 import webbrowser
@@ -33,8 +38,25 @@ DB = os.path.join(IDX, 'library.db')
 THUMB_DIR = os.path.join(IDX, '缩略图')
 PREVIEW_DIR = os.path.join(IDX, '预览缓存')
 PLAY_DIR = os.path.join(IDX, '播放缓存')
+TRASH_DIR = os.path.join(IDX, '待删除')
 TOOLS = os.path.join(BASE, '_工具')
 APP_HTML = os.path.join(TOOLS, 'app.html')
+
+# 统计缓存：任何索引/标签/收藏变化都让版本号 +1，旧缓存立即失效
+_DATA_VER = 0
+_STATS_CACHE = {}
+_DUP_CACHE = {}
+_CACHE_LOCK = threading.Lock()
+TRASH_DAYS = 7
+
+
+def bump_data():
+    """数据发生变化后调用，下一次请求重新算统计"""
+    global _DATA_VER
+    with _CACHE_LOCK:
+        _DATA_VER += 1
+        _STATS_CACHE.clear()
+        _DUP_CACHE.clear()
 
 
 def app_html_file():
@@ -111,7 +133,7 @@ CAT_RULES = [
                   '\\画册', '\\sku', '\\平面素材', '\\产品图')),
     ('品牌宣传', ('\\官网', '\\宣传', '\\公众号', '\\推广', '\\banner', '\\海报素材',
                   '\\朋友圈', '\\推文')),
-    ('茶饮工作', ('\\品牌素材\\', '\\烘焙素材\\', '\\茶饮', '\\品牌素材\\', '\\品牌素材\\',
+    ('茶饮工作', ('\\顺然素材\\', '\\烘焙素材\\', '\\茶饮', '\\巢铺\\', '\\卡旺卡\\',
                   '\\产品应用', '\\配方')),
     ('电商视频', ('\\电商视频\\', '\\视频成片\\', '\\成片\\')),
     ('截图', ('\\截图\\', '\\screenshots\\', '\\screen shot', '\\screenshot', '\\验收截图')),
@@ -288,13 +310,30 @@ def connect():
     con = sqlite3.connect(DB, timeout=30)
     con.execute('PRAGMA journal_mode=WAL')
     con.execute('PRAGMA synchronous=NORMAL')
+    con.execute('PRAGMA temp_store=MEMORY')
+    con.execute('PRAGMA cache_size=-65536')
+    con.execute('PRAGMA mmap_size=268435456')
     global _MIGRATED
     if not _MIGRATED:
         con.executescript(SCHEMA)
         cols = [r[1] for r in con.execute('PRAGMA table_info(items)')]
-        if 'sub' not in cols:
-            con.execute("ALTER TABLE items ADD COLUMN sub TEXT DEFAULT ''")
+        extra = {
+            'sub': "TEXT DEFAULT ''",
+            'sha': "TEXT DEFAULT ''",
+            'phash': "TEXT DEFAULT ''",
+            'alpha': 'INTEGER DEFAULT 0',
+            'dur': 'REAL DEFAULT 0',
+            'content': "TEXT DEFAULT ''",
+            'content_state': 'INTEGER DEFAULT 0',
+            'hash_mtime': 'INTEGER DEFAULT 0',
+            'content_mtime': 'INTEGER DEFAULT 0',
+        }
+        for name, ddl in extra.items():
+            if name not in cols:
+                con.execute('ALTER TABLE items ADD COLUMN %s %s' % (name, ddl))
         con.execute('CREATE INDEX IF NOT EXISTS idx_sub ON items(sub)')
+        con.execute('CREATE INDEX IF NOT EXISTS idx_sha ON items(sha)')
+        con.execute('CREATE INDEX IF NOT EXISTS idx_size ON items(size)')
         con.commit()
         _MIGRATED = True
     return con
@@ -317,12 +356,54 @@ CREATE TABLE IF NOT EXISTS items(
   sub TEXT DEFAULT '',
   w INTEGER,
   h INTEGER,
+  sha TEXT DEFAULT '',
+  phash TEXT DEFAULT '',
+  alpha INTEGER DEFAULT 0,
+  dur REAL DEFAULT 0,
+  content TEXT DEFAULT '',
+  content_state INTEGER DEFAULT 0,
+  hash_mtime INTEGER DEFAULT 0,
+  content_mtime INTEGER DEFAULT 0,
   seen_run INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_media ON items(media);
 CREATE INDEX IF NOT EXISTS idx_cat ON items(cat);
 CREATE INDEX IF NOT EXISTS idx_loc ON items(loc);
 CREATE INDEX IF NOT EXISTS idx_name ON items(name);
+CREATE INDEX IF NOT EXISTS idx_size ON items(size);
+
+CREATE TABLE IF NOT EXISTS tags(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT UNIQUE NOT NULL,
+  color TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS item_tags(
+  item_id INTEGER NOT NULL,
+  tag_id INTEGER NOT NULL,
+  PRIMARY KEY(item_id, tag_id)
+);
+CREATE INDEX IF NOT EXISTS idx_item_tags_tag ON item_tags(tag_id);
+CREATE TABLE IF NOT EXISTS fav(
+  item_id INTEGER PRIMARY KEY,
+  created_at INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS trash(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id INTEGER,
+  orig_path TEXT NOT NULL,
+  trash_path TEXT NOT NULL,
+  name TEXT NOT NULL,
+  ext TEXT DEFAULT '',
+  media TEXT DEFAULT '',
+  size INTEGER DEFAULT 0,
+  mtime INTEGER DEFAULT 0,
+  deleted_at INTEGER DEFAULT 0,
+  expire_at INTEGER DEFAULT 0,
+  batch TEXT DEFAULT '',
+  tags TEXT DEFAULT '',
+  fav INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_trash_batch ON trash(batch);
 """
 
 
@@ -457,6 +538,7 @@ def do_scan(full=False):
     con.commit()
     total_now = con.execute('SELECT COUNT(*) FROM items').fetchone()[0]
     con.close()
+    bump_data()
     set_progress(phase='ready', scanned=scanned, total_db=total_now, msg='索引完成')
     print('扫描完成：命中 %d 个媒体文件，新增 %d，更新 %d，用时 %.0f 秒' % (scanned, added, updated, time.time() - t0))
 
@@ -692,11 +774,47 @@ def _filter(p):
         where.append('path LIKE ?'); args.append(p['disk'] + '%')
     if p.get('sub'):
         where.append('sub=?'); args.append(p['sub'])
+    if p.get('tag'):
+        where.append('EXISTS (SELECT 1 FROM item_tags it JOIN tags t ON t.id=it.tag_id '
+                     'WHERE it.item_id=items.id AND t.name=?)'); args.append(p['tag'])
+    if p.get('fav'):
+        where.append('EXISTS (SELECT 1 FROM fav f WHERE f.item_id=items.id)')
     if p.get('q'):
-        where.append('(name LIKE ? OR path LIKE ?)')
-        args += ['%' + p['q'] + '%', '%' + p['q'] + '%']
+        where.append('(name LIKE ? OR path LIKE ? OR content LIKE ? OR content LIKE ?)')
+        q = p['q']
+        q2 = re.sub(r'\s+', '', q)
+        args += ['%' + q + '%', '%' + q + '%', '%' + q + '%', '%' + q2 + '%']
     if p.get('ext'):
         where.append('name LIKE ?'); args.append('%' + p['ext'])
+    if p.get('orient'):
+        if p['orient'] == 'square':
+            where.append('w IS NOT NULL AND h IS NOT NULL AND ABS(w-h)<=MAX(2,MIN(w,h)*0.04)')
+        elif p['orient'] == 'portrait':
+            where.append('w IS NOT NULL AND h IS NOT NULL AND h>w*1.12')
+        elif p['orient'] == 'landscape':
+            where.append('w IS NOT NULL AND h IS NOT NULL AND w>h*1.12')
+    if p.get('minw'):
+        try:
+            where.append('w>=?'); args.append(int(p['minw']))
+        except ValueError:
+            pass
+    if p.get('minh'):
+        try:
+            where.append('h>=?'); args.append(int(p['minh']))
+        except ValueError:
+            pass
+    if p.get('alpha'):
+        where.append('alpha=1')
+    if p.get('durmin'):
+        try:
+            where.append('dur>=?'); args.append(float(p['durmin']))
+        except ValueError:
+            pass
+    if p.get('durmax'):
+        try:
+            where.append('dur>0 AND dur<=?'); args.append(float(p['durmax']))
+        except ValueError:
+            pass
     if p.get('recent'):
         try:
             days = int(p['recent'])
@@ -837,6 +955,960 @@ def play_state(item_id, path, mtime, ext):
 
 
 # ---------------- HTTP ----------------
+# ---------------- 待删除箱 ----------------
+def parse_ids(ids_s, limit=500):
+    ids = []
+    for s in (ids_s or '').split(','):
+        s = s.strip()
+        if s.isdigit() and int(s) > 0 and int(s) not in ids:
+            ids.append(int(s))
+    return ids[:limit]
+
+
+def _unique_target(folder, name):
+    target = os.path.join(folder, name)
+    if not os.path.exists(target):
+        return target
+    stem, ext = os.path.splitext(name)
+    for i in range(2, 200):
+        t = os.path.join(folder, '%s (%d)%s' % (stem, i, ext))
+        if not os.path.exists(t):
+            return t
+    return os.path.join(folder, '%s (%s)%s' % (stem, uuid.uuid4().hex[:6], ext))
+
+
+def _snapshot_links(con, item_id):
+    tags = [r[0] for r in con.execute(
+        'SELECT t.name FROM item_tags it JOIN tags t ON t.id=it.tag_id WHERE it.item_id=?', (item_id,)).fetchall()]
+    fav = 1 if con.execute('SELECT 1 FROM fav WHERE item_id=?', (item_id,)).fetchone() else 0
+    return tags, fav
+
+
+def trash_one(con, item_id, batch, now):
+    row = con.execute('SELECT path,name,ext,media,size,mtime FROM items WHERE id=?', (item_id,)).fetchone()
+    if not row:
+        return {'id': item_id, 'ok': False, 'msg': '没有这条记录'}
+    path, name, ext, media, size, mtime = row
+    if not os.path.exists(path):
+        con.execute('DELETE FROM items WHERE id=?', (item_id,))
+        con.execute('DELETE FROM item_tags WHERE item_id=?', (item_id,))
+        con.execute('DELETE FROM fav WHERE item_id=?', (item_id,))
+        return {'id': item_id, 'ok': False, 'name': name, 'msg': '文件已不在原位，已清掉索引'}
+    tags, fav = _snapshot_links(con, item_id)
+    day = time.strftime('%Y%m%d', time.localtime(now))
+    destdir = os.path.join(TRASH_DIR, day, batch)
+    os.makedirs(destdir, exist_ok=True)
+    dest = _unique_target(destdir, '%d_%s' % (item_id, name))
+    try:
+        shutil.move(path, dest)
+    except Exception as e:
+        return {'id': item_id, 'ok': False, 'name': name, 'msg': '移到待删除失败：' + str(e)}
+    con.execute('INSERT INTO trash(item_id,orig_path,trash_path,name,ext,media,size,mtime,deleted_at,expire_at,batch,tags,fav)'
+                ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                (item_id, path, dest, name, ext or '', media or '', size or 0, mtime or 0,
+                 int(now), int(now + TRASH_DAYS * 86400), batch,
+                 json.dumps(tags, ensure_ascii=False), fav))
+    con.execute('DELETE FROM item_tags WHERE item_id=?', (item_id,))
+    con.execute('DELETE FROM fav WHERE item_id=?', (item_id,))
+    con.execute('DELETE FROM items WHERE id=?', (item_id,))
+    return {'id': item_id, 'ok': True, 'name': name, 'size': size or 0}
+
+
+def api_trash_add(self, ids_s):
+    ids = parse_ids(ids_s, 5000)
+    if not ids:
+        self._json({'ok': False, 'msg': '没有选中任何文件'}, 400)
+        return
+    batch = time.strftime('%Y%m%d_%H%M%S_', time.localtime()) + uuid.uuid4().hex[:6]
+    con = connect()
+    moved, failed = [], []
+    now = time.time()
+    for item_id in ids:
+        r = trash_one(con, item_id, batch, now)
+        (moved if r.get('ok') else failed).append(r)
+    con.commit()
+    con.close()
+    if moved:
+        bump_data()
+    self._json({'ok': True, 'moved': len(moved), 'failed': failed, 'batch': batch,
+                'names': [m.get('name') for m in moved],
+                'bytes': sum((m.get('size') or 0) for m in moved)})
+
+
+def _clean_expired_trash(con):
+    now = time.time()
+    rows = con.execute('SELECT id,trash_path FROM trash WHERE expire_at>0 AND expire_at<?', (now,)).fetchall()
+    for tid, p in rows:
+        try:
+            if p and os.path.exists(p):
+                os.remove(p)
+        except OSError:
+            continue
+        con.execute('DELETE FROM trash WHERE id=?', (tid,))
+    if rows:
+        con.commit()
+
+
+def _trash_count():
+    try:
+        con = connect()
+        n = con.execute('SELECT COUNT(*) FROM trash').fetchone()[0]
+        con.close()
+        return n
+    except Exception:
+        return 0
+
+
+def api_trash_list(self):
+    con = connect()
+    _clean_expired_trash(con)
+    rows = con.execute('SELECT id,item_id,orig_path,name,ext,media,size,deleted_at,expire_at,batch,tags,fav'
+                       ' FROM trash ORDER BY deleted_at DESC,id DESC').fetchall()
+    con.close()
+    items = [{'id': r[0], 'item_id': r[1], 'path': r[2], 'name': r[3], 'ext': r[4], 'media': r[5],
+              'size': r[6], 'deleted_at': r[7], 'expire_at': r[8], 'batch': r[9],
+              'tags': json.loads(r[10] or '[]'), 'fav': bool(r[11])} for r in rows]
+    self._json({'items': items, 'count': len(items), 'bytes': sum(x['size'] or 0 for x in items),
+                'days': TRASH_DAYS})
+
+
+def trash_restore(con, tid):
+    row = con.execute('SELECT orig_path,trash_path,name,ext,size,mtime,tags,fav FROM trash WHERE id=?', (tid,)).fetchone()
+    if not row:
+        return {'id': tid, 'ok': False, 'msg': '记录不存在'}
+    orig, src, name, ext, size, mtime, tags_s, fav = row
+    if not src or not os.path.exists(src):
+        con.execute('DELETE FROM trash WHERE id=?', (tid,))
+        return {'id': tid, 'ok': False, 'name': name, 'msg': '待删除箱里的文件已丢失'}
+    folder = os.path.dirname(orig)
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except OSError as e:
+        return {'id': tid, 'ok': False, 'name': name, 'msg': '原目录不可写：' + str(e)}
+    target = orig if not os.path.exists(orig) else _unique_target(folder, os.path.splitext(name)[0] + ' (还原)' + (ext or ''))
+    try:
+        shutil.move(src, target)
+    except Exception as e:
+        return {'id': tid, 'ok': False, 'name': name, 'msg': '还原失败：' + str(e)}
+    st = os.stat(target)
+    media = media_of(os.path.splitext(target)[1])
+    con.execute('INSERT INTO items(path,name,ext,media,size,mtime,loc,cat,sub,seen_run)'
+                ' VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET name=excluded.name,'
+                ' ext=excluded.ext,media=excluded.media,size=excluded.size,mtime=excluded.mtime,'
+                ' loc=excluded.loc,cat=excluded.cat,sub=excluded.sub,seen_run=excluded.seen_run',
+                (target, os.path.basename(target), os.path.splitext(target)[1].lower(), media or '',
+                 st.st_size, int(st.st_mtime), location_of(target), guess_cat(target, media or ''),
+                 sub_of(target, media or ''), int(time.time() * 1000)))
+    item_id = con.execute('SELECT id FROM items WHERE path=?', (target,)).fetchone()[0]
+    for name in json.loads(tags_s or '[]'):
+        con.execute('INSERT OR IGNORE INTO tags(name) VALUES(?)', (name,))
+        tag_id = con.execute('SELECT id FROM tags WHERE name=?', (name,)).fetchone()[0]
+        con.execute('INSERT OR IGNORE INTO item_tags(item_id,tag_id) VALUES(?,?)', (item_id, tag_id))
+    if fav:
+        con.execute('INSERT OR IGNORE INTO fav(item_id,created_at) VALUES(?,?)', (item_id, int(time.time())))
+    con.execute('DELETE FROM trash WHERE id=?', (tid,))
+    return {'id': tid, 'ok': True, 'name': os.path.basename(target), 'path': target}
+
+
+def api_trash_restore(self, ids_s):
+    ids = parse_ids(ids_s, 500)
+    if not ids:
+        self._json({'ok': False, 'msg': '没有指定要还原的记录'}, 400)
+        return
+    con = connect()
+    ok, failed = [], []
+    for tid in ids:
+        r = trash_restore(con, tid)
+        (ok if r.get('ok') else failed).append(r)
+    con.commit(); con.close()
+    if ok:
+        bump_data()
+    self._json({'ok': True, 'restored': len(ok), 'failed': failed})
+
+
+def api_trash_undo(self):
+    con = connect()
+    batch = con.execute('SELECT batch FROM trash ORDER BY deleted_at DESC,id DESC LIMIT 1').fetchone()
+    if not batch or not batch[0]:
+        con.close()
+        self._json({'ok': False, 'msg': '没有可撤销的删除'}, 404)
+        return
+    ids = [r[0] for r in con.execute('SELECT id FROM trash WHERE batch=?', (batch[0],)).fetchall()]
+    con.close()
+    api_trash_restore(self, ','.join(str(i) for i in ids))
+
+
+def api_trash_clear(self):
+    con = connect()
+    rows = con.execute('SELECT trash_path FROM trash').fetchall()
+    removed = 0
+    for (p,) in rows:
+        try:
+            if p and os.path.exists(p):
+                os.remove(p)
+                removed += 1
+        except OSError:
+            pass
+    con.execute('DELETE FROM trash')
+    con.commit(); con.close()
+    bump_data()
+    self._json({'ok': True, 'removed': removed})
+
+
+# ---------------- 标签、收藏 ----------------
+def _tag_list(con, item_id):
+    return [r[0] for r in con.execute(
+        'SELECT t.name FROM item_tags it JOIN tags t ON t.id=it.tag_id WHERE it.item_id=? ORDER BY t.name',
+        (item_id,)).fetchall()]
+
+
+def api_tag_add(self, ids_s, name):
+    ids = parse_ids(ids_s, 500)
+    name = (name or '').strip()
+    if not name or len(name) > 24:
+        self._json({'ok': False, 'msg': '标签需为 1–24 个字'}, 400)
+        return
+    con = connect()
+    con.execute('INSERT OR IGNORE INTO tags(name) VALUES(?)', (name,))
+    tag_id = con.execute('SELECT id FROM tags WHERE name=?', (name,)).fetchone()[0]
+    n = 0
+    for item_id in ids:
+        if con.execute('SELECT 1 FROM items WHERE id=?', (item_id,)).fetchone():
+            con.execute('INSERT OR IGNORE INTO item_tags(item_id,tag_id) VALUES(?,?)', (item_id, tag_id))
+            n += 1
+    con.commit(); con.close()
+    if n:
+        bump_data()
+    self._json({'ok': True, 'tag': name, 'count': n})
+
+
+def api_tag_remove(self, ids_s, name):
+    ids = parse_ids(ids_s, 500)
+    con = connect()
+    tag_id = con.execute('SELECT id FROM tags WHERE name=?', ((name or '').strip(),)).fetchone()
+    if not tag_id:
+        con.close()
+        self._json({'ok': False, 'msg': '没有这个标签'}, 404)
+        return
+    n = 0
+    for item_id in ids:
+        cur = con.execute('DELETE FROM item_tags WHERE item_id=? AND tag_id=?', (item_id, tag_id[0]))
+        n += cur.rowcount
+    con.commit(); con.close()
+    bump_data()
+    self._json({'ok': True, 'tag': name, 'removed': n})
+
+
+def api_tag_delete(self, name):
+    name = (name or '').strip()
+    con = connect()
+    row = con.execute('SELECT id FROM tags WHERE name=?', (name,)).fetchone()
+    if row:
+        con.execute('DELETE FROM item_tags WHERE tag_id=?', (row[0],))
+        con.execute('DELETE FROM tags WHERE id=?', (row[0],))
+        con.commit()
+        bump_data()
+    con.close()
+    self._json({'ok': True})
+
+
+def api_tags(self):
+    con = connect()
+    rows = con.execute('SELECT t.name,COUNT(it.item_id) FROM tags t LEFT JOIN item_tags it ON it.tag_id=t.id'
+                       ' GROUP BY t.id ORDER BY COUNT(it.item_id) DESC,t.name').fetchall()
+    con.close()
+    self._json({'tags': [{'name': r[0], 'n': r[1]} for r in rows]})
+
+
+def api_item_tags(self, item_id):
+    con = connect()
+    row = con.execute('SELECT id,name,path FROM items WHERE id=?', (item_id,)).fetchone()
+    if not row:
+        con.close()
+        self._json({'error': 'not found'}, 404)
+        return
+    con.close()
+    con = connect()
+    tags = _tag_list(con, item_id)
+    fav = bool(con.execute('SELECT 1 FROM fav WHERE item_id=?', (item_id,)).fetchone())
+    con.close()
+    self._json({'id': item_id, 'tags': tags, 'fav': fav})
+
+
+def api_fav(self, ids_s, on):
+    ids = parse_ids(ids_s, 500)
+    con = connect()
+    n = 0
+    for item_id in ids:
+        if not con.execute('SELECT 1 FROM items WHERE id=?', (item_id,)).fetchone():
+            continue
+        if on:
+            con.execute('INSERT OR IGNORE INTO fav(item_id,created_at) VALUES(?,?)', (item_id, int(time.time())))
+        else:
+            con.execute('DELETE FROM fav WHERE item_id=?', (item_id,))
+        n += 1
+    con.commit(); con.close()
+    if n:
+        bump_data()
+    self._json({'ok': True, 'count': n, 'on': bool(on)})
+
+
+# ---------------- 哈希、重复清理 ----------------
+DEDUPE_JOB = {'running': False, 'phase': 'idle', 'done': 0, 'total': 0, 'msg': '', 't0': 0, 'found': 0}
+
+
+def _dedupe_set(**kw):
+    DEDUPE_JOB.update(kw)
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        while True:
+            b = f.read(1024 * 1024)
+            if not b:
+                break
+            h.update(b)
+    return h.hexdigest()
+
+
+def file_fingerprint(path):
+    """小文件算完整 SHA-256；大文件用 大小+首/中/尾各 1MB 的 BLAKE2b，
+    避免为了查重把几百 MB 的视频/画册从头读到尾，实际重复判定足够可靠。"""
+    size = os.path.getsize(path)
+    if size <= 8 * 1024 * 1024:
+        return sha256_file(path)
+    h = hashlib.blake2b(digest_size=16)
+    h.update(str(size).encode('ascii'))
+    chunk = 1024 * 1024
+    with open(path, 'rb') as f:
+        for pos in (0, max(0, size // 2 - chunk // 2), max(0, size - chunk)):
+            f.seek(pos)
+            h.update(f.read(chunk))
+    return 'q:' + h.hexdigest()
+
+
+def _image_for_hash(path, item_id=None, mtime=None):
+    # 优先用已经生成过的缩略图，比每次重开 4K 原图快很多
+    if item_id and mtime:
+        key = '%d_%d.webp' % (int(item_id), int(mtime))
+        t = os.path.join(THUMB_DIR, key[:2], key)
+        try:
+            if os.path.exists(t):
+                from PIL import Image
+                return Image.open(t), True
+        except Exception:
+            pass
+    key = None
+    try:
+        st = os.stat(path)
+        key = os.path.join(THUMB_DIR, '_hash', '%s_%d.webp' % (hashlib.md5(path.encode('utf-8')).hexdigest(), int(st.st_mtime)))
+        if os.path.exists(key):
+            from PIL import Image
+            return Image.open(key), True
+    except Exception:
+        pass
+    from PIL import Image, ImageOps
+    im = Image.open(path)
+    # 先看文件头尺寸，再 EXIF 旋转；否则 exif_transpose 会直接解码上亿像素大图
+    if im.width * im.height > 16_000_000:
+        im.close()
+        raise ValueError('image too large')
+    im = ImageOps.exif_transpose(im)
+    if im.mode in ('P', 'LA', 'CMYK'):
+        im = im.convert('RGBA')
+    return im, False
+
+
+def dhash_file(path, item_id=None, mtime=None):
+    """64 位差值哈希，返回 (哈希, 是否透明, 宽, 高)"""
+    im, cached = _image_for_hash(path, item_id, mtime)
+    try:
+        w, h = im.size
+        if not cached and w * h > 16_000_000:
+            # 上亿像素的超大图解码会占满几分钟 CPU，查相似直接跳过
+            raise ValueError('image too large')
+        if cached:
+            # 缩略图尺寸不是原图尺寸，只读原图文件头补回宽高
+            try:
+                from PIL import Image
+                ow, oh = Image.open(path).size
+                if ow and oh:
+                    w, h = ow, oh
+            except Exception:
+                pass
+        alpha = 0
+        if im.mode in ('RGBA', 'LA') or 'transparency' in getattr(im, 'info', {}):
+            a = im.convert('RGBA').getchannel('A')
+            if a.getextrema()[0] < 250:
+                alpha = 1
+        g = im.convert('L').resize((9, 8), 1)
+        px = list(g.getdata())
+        bits = 0
+        for y in range(8):
+            for x in range(8):
+                bits = (bits << 1) | (1 if px[y * 9 + x] > px[y * 9 + x + 1] else 0)
+        return '%016x' % bits, alpha, w, h
+    finally:
+        if not cached:
+            try:
+                im.close()
+            except Exception:
+                pass
+
+
+def _hamming(a, b):
+    return (int(a, 16) ^ int(b, 16)).bit_count()
+
+
+def start_dedupe():
+    if DEDUPE_JOB.get('running'):
+        return False
+    DEDUPE_JOB.update({'running': True, 'phase': '准备', 'done': 0, 'total': 0, 'msg': '正在找候选…',
+                       't0': time.time(), 'found': 0})
+    threading.Thread(target=_dedupe_worker, daemon=True).start()
+    return True
+
+
+def _cloud_path(path):
+    p = (path or '').lower().replace('/', '\\')
+    return any(k in p for k in ('\\wps cloud', '\\onedrive', '\\dropbox', '\\google drive',
+                                '\\iclouddrive', '\\cachedata\\'))
+
+
+def _sha_row(row):
+    item_id, path, mtime, size = row
+    try:
+        if _cloud_path(path):
+            return item_id, '!cloud', mtime
+        # 先用索引里的大小判断，避免为几百 MB 的老文件去碰可能休眠的外接盘
+        if (size or 0) > 64 * 1024 * 1024:
+            return item_id, '!big', mtime
+        if not os.path.exists(path):
+            return item_id, '', mtime
+        st = os.stat(path)
+        # 云盘占位文件读取会触发下载/长时间等待，直接跳过
+        if getattr(st, 'st_file_attributes', 0) & 0x400000:
+            return item_id, '!cloud', mtime
+        return item_id, file_fingerprint(path), mtime
+    except Exception:
+        return item_id, '', mtime
+
+
+def _hash_row(row):
+    item_id, path, mtime, size = row
+    try:
+        if _cloud_path(path):
+            return item_id, '!cloud', 0, 0, 0, mtime
+        if not os.path.exists(path):
+            return item_id, None, 0, 0, 0, mtime
+        return (item_id,) + dhash_file(path, item_id, mtime) + (mtime,)
+    except Exception:
+        return item_id, None, 0, 0, 0, mtime
+
+
+def _dedupe_worker():
+    _low_priority()
+    con = None
+    try:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        con = connect()
+        size_rows = con.execute(
+            'SELECT id,path,mtime,size FROM items WHERE size>0 AND size IN (SELECT size FROM items GROUP BY size HAVING COUNT(*)>1)'
+            ' AND (sha="" OR hash_mtime<mtime)').fetchall()
+        img_rows = con.execute(
+            'SELECT id,path,mtime,size FROM items WHERE media="图片"'
+            ' AND ext IN (".jpg",".jpeg",".png",".webp",".gif",".bmp",".tif",".tiff",".avif")'
+            ' AND (phash="" OR hash_mtime<mtime OR w IS NULL)').fetchall()
+        img_rows = [r for r in img_rows if (r[3] or 0) <= 50 * 1024 * 1024 and not _cloud_path(r[1])]
+        def _has_thumb(r):
+            try:
+                k = '%d_%d.webp' % (int(r[0]), int(r[2]))
+                return os.path.exists(os.path.join(THUMB_DIR, k[:2], k))
+            except Exception:
+                return False
+        # 大图没有缩略图时解码很慢，先跳过；浏览过一次生成缩略图后再分析会快很多
+        img_rows = [r for r in img_rows if (r[3] or 0) <= 1.5 * 1024 * 1024 or _has_thumb(r)]
+        vid_ids = [r[0] for r in con.execute('SELECT id FROM items WHERE media="视频" AND dur<=0').fetchall()]
+        total = len(size_rows) + len(img_rows) + len(vid_ids)
+        _dedupe_set(total=total, msg='共 %d 个文件需要分析' % total)
+        done = 0
+        # 并行读盘 / 解码；SQLite 写入仍只在主线程，避免锁竞争
+        # PIL 的 resize/convert 会较长时间持有 GIL，线程太多反而饿死主线程的进度/写库
+        workers = min(2, os.cpu_count() or 2)
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_sha_row, r) for r in size_rows]
+            for fut in as_completed(futs):
+                item_id, sha, mt = fut.result()
+                con.execute('UPDATE items SET sha=?,hash_mtime=? WHERE id=?', (sha, mt, item_id))
+                done += 1
+                if done % 30 == 0:
+                    con.commit()
+                    _dedupe_set(done=done, phase='查重', msg='正在计算文件指纹 %d/%d' % (done, total))
+        con.commit()
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_hash_row, r) for r in img_rows]
+            for fut in as_completed(futs):
+                item_id, ph, alpha, w, h, mt = fut.result()
+                if ph is None or ph == '!cloud':
+                    con.execute('UPDATE items SET hash_mtime=? WHERE id=?', (mt, item_id))
+                else:
+                    con.execute('UPDATE items SET phash=?,alpha=?,w=COALESCE(w,?),h=COALESCE(h,?),hash_mtime=? WHERE id=?',
+                                (ph, alpha, w, h, mt, item_id))
+                done += 1
+                if done % 25 == 0:
+                    con.commit()
+                    _dedupe_set(done=done, phase='查相似', msg='正在看图片 %d/%d' % (done, total))
+        con.commit()
+        for item_id in vid_ids:
+            row = con.execute('SELECT path FROM items WHERE id=?', (item_id,)).fetchone()
+            if row:
+                try:
+                    dur, _ = _probe_video(row[0])
+                    con.execute('UPDATE items SET dur=? WHERE id=?', (dur or 0, item_id))
+                except Exception:
+                    pass
+            done += 1
+            if done % 50 == 0:
+                con.commit()
+                _dedupe_set(done=done, phase='视频时长', msg='正在读视频信息 %d/%d' % (done, total))
+        con.commit()
+        bump_data()
+        _dedupe_set(running=False, phase='ready', done=total, msg='分析完成')
+    except Exception as e:
+        _dedupe_set(running=False, phase='error', msg=str(e))
+    finally:
+        if con:
+            try:
+                con.close()
+            except Exception:
+                pass
+
+
+def dup_exact_plan():
+    """返回所有完全重复组里的非保留项，用于“一键清理完全重复”"""
+    con = connect()
+    rows = con.execute('SELECT id,size,mtime,w,h,sha FROM items WHERE sha<>"" AND sha NOT LIKE "!%"').fetchall()
+    con.close()
+    groups = {}
+    for r in rows:
+        groups.setdefault(r[5], []).append(r)
+    ids, wasted = [], 0
+    for arr in groups.values():
+        if len(arr) < 2:
+            continue
+        best = max(arr, key=lambda x: ((x[3] or 0) * (x[4] or 0), x[1] or 0, x[2] or 0))
+        for x in arr:
+            if x[0] != best[0]:
+                ids.append(x[0])
+        wasted += max(0, sum((x[1] or 0) for x in arr) - (best[1] or 0))
+    return {'ok': True, 'ids': ids, 'groups': sum(1 for a in groups.values() if len(a) > 1), 'bytes': wasted}
+
+
+def dup_groups():
+    key = _DATA_VER
+    cached = _DUP_CACHE.get('groups')
+    if cached and cached[0] == key:
+        return cached[1]
+    con = connect()
+    rows = con.execute('SELECT id,name,path,ext,media,size,mtime,w,h,sha,phash,cat,sub,loc FROM items').fetchall()
+    cols = ['id', 'name', 'path', 'ext', 'media', 'size', 'mtime', 'w', 'h', 'sha', 'phash', 'cat', 'sub', 'loc']
+    items = [dict(zip(cols, r)) for r in rows]
+
+    def best_of(ids):
+        return max(ids, key=lambda x: ((x.get('w') or 0) * (x.get('h') or 0), x.get('size') or 0, x.get('mtime') or 0))
+
+    def pack(ids, kind, dist=0):
+        chosen = best_of(ids)
+        total = sum((x.get('size') or 0) for x in ids)
+        return {'kind': kind, 'items': ids, 'best': chosen['id'], 'wasted': max(0, total - (chosen.get('size') or 0)),
+                'distance': dist}
+    exact = []
+    by_sha = {}
+    for x in items:
+        if x['sha'] and not x['sha'].startswith('!'):
+            by_sha.setdefault(x['sha'], []).append(x)
+    for sha, arr in by_sha.items():
+        if len(arr) > 1:
+            exact.append(pack(arr, 'exact'))
+    exact.sort(key=lambda g: g['wasted'], reverse=True)
+
+    # 相似图：先按 sha 合并完全相同的文件，避免同一个文件在“完全重复”和“相似”里重复计算
+    raw_imgs = [x for x in items if x['media'] == '图片' and x['phash']
+                and 8 <= int(x['phash'], 16).bit_count() <= 56]
+    reps = {}
+    imgs = []
+    for x in raw_imgs:
+        if x['sha'] and not x['sha'].startswith('!'):
+            cur = reps.get(x['sha'])
+            if cur is None or ((x.get('size') or 0), (x.get('mtime') or 0)) > ((cur.get('size') or 0), (cur.get('mtime') or 0)):
+                reps[x['sha']] = x
+        else:
+            imgs.append(x)
+    imgs += list(reps.values())
+    parent = list(range(len(imgs)))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+    band_buckets = [{} for _ in range(8)]
+    for i, x in enumerate(imgs):
+        v = int(x['phash'], 16)
+        for b in range(8):
+            band_buckets[b].setdefault((v >> (b * 8)) & 0xff, []).append(i)
+    for bucket in band_buckets:
+        for arr in bucket.values():
+            if len(arr) < 2 or len(arr) > 350:
+                continue
+            for ai in range(len(arr)):
+                for bi in range(ai + 1, len(arr)):
+                    a, b = arr[ai], arr[bi]
+                    if find(a) == find(b):
+                        continue
+                    if _hamming(imgs[a]['phash'], imgs[b]['phash']) <= 2:
+                        union(a, b)
+    clusters = {}
+    for i in range(len(imgs)):
+        clusters.setdefault(find(i), []).append(imgs[i])
+    similar = []
+    for arr in clusters.values():
+        if len(arr) < 2 or len(arr) > 20:
+            continue
+        if all(x['sha'] for x in arr) and len(set(x['sha'] for x in arr)) == 1:
+            continue
+        similar.append(pack(arr, 'similar', min(_hamming(a['phash'], b['phash']) for a in arr for b in arr if a is not b)))
+    similar.sort(key=lambda g: (len(g['items']), g['wasted']), reverse=True)
+    result = {'exact': exact[:80], 'similar': similar[:80],
+              'exact_count': len(exact), 'similar_count': len(similar),
+              'wasted': sum(g['wasted'] for g in exact) + sum(g['wasted'] for g in similar)}
+    con.close()
+    _DUP_CACHE['groups'] = (key, result)
+    return result
+
+
+# ---------------- 内容索引（PDF/PPT 文本 + 图片 OCR） ----------------
+CONTENT_JOB = {'running': False, 'phase': 'idle', 'done': 0, 'total': 0, 'msg': '', 't0': 0, 'ocr': False}
+_OCR_ENGINE = None
+_OCR_TRIED = False
+
+
+def _content_set(**kw):
+    CONTENT_JOB.update(kw)
+
+
+def ocr_available():
+    global _OCR_ENGINE, _OCR_TRIED
+    if _OCR_TRIED:
+        return _OCR_ENGINE is not None
+    _OCR_TRIED = True
+    try:
+        from winrt.windows.media.ocr import OcrEngine
+        from winrt.windows.globalization import Language
+        eng = OcrEngine.try_create_from_language(Language('zh-Hans'))
+        if eng is None:
+            eng = OcrEngine.try_create_from_user_profile_languages()
+        _OCR_ENGINE = eng
+    except Exception:
+        _OCR_ENGINE = None
+    return _OCR_ENGINE is not None
+
+
+def _clean_text(s):
+    s = re.sub(r'\s+', ' ', s or '')
+    s = re.sub(r'(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])', '', s)
+    return s.strip()
+
+
+def ocr_file(path):
+    if not ocr_available():
+        return ''
+    import asyncio
+    from winrt.windows.storage import StorageFile, FileAccessMode
+    from winrt.windows.graphics.imaging import BitmapDecoder
+
+    async def run():
+        f = await StorageFile.get_file_from_path_async(path)
+        s = await f.open_async(FileAccessMode.READ)
+        dec = await BitmapDecoder.create_async(s)
+        bmp = await dec.get_software_bitmap_async()
+        res = await _OCR_ENGINE.recognize_async(bmp)
+        return res.text or ''
+
+    try:
+        # 截图 OCR 常在中英文/数字之间插空格；中文搜索不分词，直接去掉全部空白
+        return re.sub(r'\s+', '', asyncio.run(run()))
+    except Exception:
+        return ''
+
+
+def pdf_text(path):
+    try:
+        import pypdfium2 as pdfium
+        pdf = pdfium.PdfDocument(path)
+        out = []
+        for i in range(min(len(pdf), 30)):
+            try:
+                out.append(pdf[i].get_textpage().get_text_range())
+            except Exception:
+                pass
+        try:
+            pdf.close()
+        except Exception:
+            pass
+        return _clean_text(' '.join(out))
+    except Exception:
+        return ''
+
+
+def pptx_text(path):
+    try:
+        from pptx import Presentation
+        prs = Presentation(path)
+        out = []
+        for slide in prs.slides[:30]:
+            for sh in slide.shapes:
+                try:
+                    if hasattr(sh, 'text') and sh.text:
+                        out.append(sh.text)
+                    if getattr(sh, 'has_table', False):
+                        for row in sh.table.rows:
+                            for cell in row.cells:
+                                out.append(cell.text)
+                except Exception:
+                    pass
+        return _clean_text(' '.join(out))
+    except Exception:
+        return ''
+
+
+def start_content(scope='smart'):
+    if CONTENT_JOB.get('running'):
+        return False
+    CONTENT_JOB.update({'running': True, 'phase': '准备', 'done': 0, 'total': 0, 'msg': '正在挑文件…',
+                        't0': time.time(), 'ocr': ocr_available(), 'stop': False})
+    threading.Thread(target=_content_worker, args=(scope,), daemon=True).start()
+    return True
+
+
+def _content_worker(scope):
+    _low_priority()
+    con = None
+    try:
+        con = connect()
+        docs = con.execute('SELECT id FROM items WHERE media="文档" AND (content_state=0 OR content_mtime<mtime)'
+                           ' ORDER BY mtime DESC').fetchall()
+        if scope == 'docs':
+            imgs = []
+        elif scope == 'all':
+            imgs = con.execute('SELECT id FROM items WHERE media="图片" AND content_state<>2 AND (content_state=0 OR content_mtime<mtime)'
+                               ' AND size<=25*1024*1024 ORDER BY mtime DESC').fetchall()
+        else:
+            imgs = con.execute('SELECT id FROM items WHERE media="图片" AND content_state<>2 AND (content_state=0 OR content_mtime<mtime)'
+                               ' AND size<=25*1024*1024 AND cat IN ("截图","表情包","证照文档","品牌宣传","产品物料")'
+                               ' ORDER BY mtime DESC LIMIT 3000').fetchall()
+        ids = [r[0] for r in docs] + [r[0] for r in imgs]
+        total = len(ids)
+        _content_set(total=total, msg='共 %d 个文件待索引' % total)
+        for i, item_id in enumerate(ids, 1):
+            if CONTENT_JOB.get('stop'):
+                _content_set(running=False, phase='stopped', msg='已停止，进度已保存')
+                con.commit()
+                return
+            row = con.execute('SELECT path,media,ext,mtime FROM items WHERE id=?', (item_id,)).fetchone()
+            text = ''
+            state = 2
+            if row and os.path.exists(row[0]):
+                path, media, ext, mtime = row
+                try:
+                    if ext == '.pdf':
+                        text = pdf_text(path)
+                    elif ext in ('.ppt', '.pptx'):
+                        text = pptx_text(path) if ext == '.pptx' else ''
+                    elif media == '图片':
+                        if ocr_available():
+                            text = ocr_file(path)
+                        else:
+                            state = 3
+                except Exception:
+                    state = 3
+            else:
+                state = 3
+            con.execute('UPDATE items SET content=?,content_state=?,content_mtime=? WHERE id=?',
+                        (text[:20000], state, (row[3] if row else 0), item_id))
+            if i % 10 == 0:
+                con.commit()
+                _content_set(done=i, phase='索引中', msg='正在读 %d/%d：%s' % (i, total, (row[1] if row else '')))
+        con.commit()
+        bump_data()
+        _content_set(running=False, phase='ready', done=total, msg='内容索引完成')
+    except Exception as e:
+        _content_set(running=False, phase='error', msg=str(e))
+    finally:
+        if con:
+            try:
+                con.close()
+            except Exception:
+                pass
+
+
+# ---------------- 批量整理 ----------------
+def api_batch_rename(self, ids_s, pattern, start=1):
+    ids = parse_ids(ids_s, 300)
+    pattern = (pattern or '').strip()
+    if not ids or not pattern:
+        self._json({'ok': False, 'msg': '请选中文件并填写命名模板'}, 400)
+        return
+    try:
+        start = max(1, int(start))
+    except ValueError:
+        start = 1
+    con = connect()
+    done, failed = [], []
+    for idx, item_id in enumerate(ids, start):
+        row = con.execute('SELECT path,name,ext FROM items WHERE id=?', (item_id,)).fetchone()
+        if not row or not os.path.exists(row[0]):
+            failed.append({'id': item_id, 'msg': '文件已不在原位'})
+            continue
+        path, old, ext = row
+        base = os.path.splitext(old)[0]
+        new = pattern.replace('{name}', base).replace('{n}', str(idx).zfill(max(2, len(str(start + len(ids) - 1)))))
+        new = new.replace('{date}', time.strftime('%Y%m%d', time.localtime()))
+        if '{ext}' not in pattern and not os.path.splitext(new)[1]:
+            new += ext or ''
+        new = re.sub(r'[\\/:*?"<>|]', '_', new).strip() or ('素材' + ext)
+        folder = os.path.dirname(path)
+        target = _unique_target(folder, new)
+        try:
+            os.rename(path, target)
+        except OSError as e:
+            failed.append({'id': item_id, 'name': old, 'msg': '重命名失败：' + str(e)})
+            continue
+        st = os.stat(target)
+        n_ext = os.path.splitext(target)[1].lower()
+        con.execute('UPDATE items SET path=?,name=?,ext=?,size=?,mtime=?,cat=?,sub=? WHERE id=?',
+                    (target, os.path.basename(target), n_ext, st.st_size, int(st.st_mtime),
+                     guess_cat(target, media_of(n_ext)), sub_of(target, media_of(n_ext)), item_id))
+        done.append({'id': item_id, 'name': os.path.basename(target)})
+    con.commit(); con.close()
+    if done:
+        bump_data()
+    self._json({'ok': True, 'renamed': len(done), 'failed': failed, 'names': [d['name'] for d in done]})
+
+
+def api_batch_move(self, ids_s, dest, mkdir=0):
+    ids = parse_ids(ids_s, 300)
+    dest = (dest or '').strip().strip('"')
+    if not ids or not dest:
+        self._json({'ok': False, 'msg': '请选中文件并填写目标文件夹'}, 400)
+        return
+    if not os.path.isabs(dest):
+        self._json({'ok': False, 'msg': '目标要填完整路径，例如 D:\\素材\\气球'}, 400)
+        return
+    if not os.path.isdir(dest):
+        if mkdir:
+            try:
+                os.makedirs(dest, exist_ok=True)
+            except OSError as e:
+                self._json({'ok': False, 'msg': '无法创建目标目录：' + str(e)}, 400)
+                return
+        else:
+            self._json({'ok': False, 'msg': '目标文件夹不存在'}, 400)
+            return
+    con = connect()
+    done, failed = [], []
+    for item_id in ids:
+        row = con.execute('SELECT path,name FROM items WHERE id=?', (item_id,)).fetchone()
+        if not row or not os.path.exists(row[0]):
+            failed.append({'id': item_id, 'msg': '文件已不在原位'})
+            continue
+        path, name = row
+        if os.path.normcase(os.path.dirname(path)) == os.path.normcase(dest):
+            failed.append({'id': item_id, 'name': name, 'msg': '已经在这个目录里'})
+            continue
+        target = _unique_target(dest, name)
+        try:
+            shutil.move(path, target)
+        except Exception as e:
+            failed.append({'id': item_id, 'name': name, 'msg': '移动失败：' + str(e)})
+            continue
+        st = os.stat(target)
+        media = media_of(os.path.splitext(target)[1])
+        con.execute('UPDATE items SET path=?,name=?,size=?,mtime=?,loc=?,cat=?,sub=? WHERE id=?',
+                    (target, os.path.basename(target), st.st_size, int(st.st_mtime), location_of(target),
+                     guess_cat(target, media), sub_of(target, media), item_id))
+        done.append({'id': item_id, 'name': os.path.basename(target), 'path': target})
+    con.commit(); con.close()
+    if done:
+        bump_data()
+    self._json({'ok': True, 'moved': len(done), 'failed': failed})
+
+
+def api_batch_convert(self, ids_s, fmt='webp', quality=85, dest=''):
+    ids = parse_ids(ids_s, 150)
+    if not ids:
+        self._json({'ok': False, 'msg': '没有选中图片'}, 400)
+        return
+    fmt = 'webp' if (fmt or '').lower() != 'jpg' else 'jpeg'
+    try:
+        quality = min(95, max(40, int(quality)))
+    except ValueError:
+        quality = 85
+    out_root = (dest or '').strip().strip('"')
+    if out_root and not os.path.isabs(out_root):
+        self._json({'ok': False, 'msg': '输出目录要填完整路径'}, 400)
+        return
+    con = connect()
+    done, failed, before, after = [], [], 0, 0
+    from PIL import Image, ImageOps
+    for item_id in ids:
+        row = con.execute('SELECT path,name,media,size FROM items WHERE id=?', (item_id,)).fetchone()
+        if not row or row[2] != '图片' or not os.path.exists(row[0]):
+            failed.append({'id': item_id, 'msg': '不是可转换的图片或文件已丢失'})
+            continue
+        path, name, media, size = row
+        try:
+            folder = out_root or os.path.dirname(path)
+            os.makedirs(folder, exist_ok=True)
+            base = os.path.splitext(name)[0]
+            target = _unique_target(folder, base + ('.jpg' if fmt == 'jpeg' else '.webp'))
+            with Image.open(path) as im:
+                im = ImageOps.exif_transpose(im)
+                if fmt == 'webp':
+                    if im.mode not in ('RGB', 'RGBA'):
+                        im = im.convert('RGBA')
+                    im.save(target, 'WEBP', quality=quality, method=4)
+                else:
+                    im = im.convert('RGB')
+                    im.save(target, 'JPEG', quality=quality, optimize=True)
+            old_size = os.path.getsize(path)
+            new_size = os.path.getsize(target)
+            st = os.stat(target)
+            con.execute('INSERT INTO items(path,name,ext,media,size,mtime,loc,cat,sub,seen_run)'
+                        ' VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET size=excluded.size,'
+                        ' mtime=excluded.mtime,seen_run=excluded.seen_run',
+                        (target, os.path.basename(target), os.path.splitext(target)[1].lower(), '图片',
+                         new_size, int(st.st_mtime), location_of(target), guess_cat(target, '图片'),
+                         sub_of(target, '图片'), int(time.time() * 1000)))
+            before += old_size; after += new_size
+            done.append({'id': item_id, 'name': os.path.basename(target), 'old': old_size, 'new': new_size})
+        except Exception as e:
+            failed.append({'id': item_id, 'name': name, 'msg': '转换失败：' + str(e)})
+    con.commit(); con.close()
+    if done:
+        bump_data()
+    self._json({'ok': True, 'converted': len(done), 'failed': failed, 'before': before, 'after': after,
+                'saved': max(0, before - after)})
+
+
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = 'MediaLib'
 
@@ -956,6 +2028,68 @@ class Handler(BaseHTTPRequestHandler):
             api_clip(self, int(m.group(1)), True)
             return
 
+        if p == '/api/trash':
+            api_trash_list(self); return
+        if p == '/api/trash/add':
+            api_trash_add(self, (q.get('ids') or [''])[0]); return
+        if p == '/api/trash/restore':
+            api_trash_restore(self, (q.get('ids') or [''])[0]); return
+        if p == '/api/trash/undo':
+            api_trash_undo(self); return
+        if p == '/api/trash/clear':
+            api_trash_clear(self); return
+
+        if p == '/api/tags':
+            api_tags(self); return
+        if p == '/api/tag/add':
+            api_tag_add(self, (q.get('ids') or [''])[0], (q.get('name') or [''])[0]); return
+        if p == '/api/tag/remove':
+            api_tag_remove(self, (q.get('ids') or [''])[0], (q.get('name') or [''])[0]); return
+        if p == '/api/tag/delete':
+            api_tag_delete(self, (q.get('name') or [''])[0]); return
+        if p == '/api/fav':
+            api_fav(self, (q.get('ids') or [''])[0], (q.get('on') or ['0'])[0] == '1'); return
+        m = re.match(r'^/api/itemtags/(\d+)$', p)
+        if m:
+            api_item_tags(self, int(m.group(1))); return
+
+        if p == '/api/dedupe/start':
+            ok = start_dedupe()
+            self._json({'ok': ok, 'msg': '已开始分析' if ok else '正在分析中'}); return
+        if p == '/api/dedupe/status':
+            g = dup_groups() if not DEDUPE_JOB.get('running') and DEDUPE_JOB.get('phase') in ('ready', 'idle') else None
+            self._json({'job': DEDUPE_JOB, 'exact_count': (g or {}).get('exact_count', 0),
+                        'similar_count': (g or {}).get('similar_count', 0)}); return
+        if p == '/api/dedupe/plan':
+            self._json(dup_exact_plan()); return
+        if p == '/api/dedupe/groups':
+            g = dup_groups()
+            g['job'] = DEDUPE_JOB
+            self._json(g); return
+
+        if p == '/api/content/start':
+            ok = start_content((q.get('scope') or ['smart'])[0])
+            self._json({'ok': ok, 'job': CONTENT_JOB, 'ocr': ocr_available()}); return
+        if p == '/api/content/stop':
+            CONTENT_JOB['stop'] = True
+            self._json({'ok': True}); return
+        if p == '/api/content/status':
+            con = connect()
+            indexed = con.execute('SELECT COUNT(*) FROM items WHERE content<>""').fetchone()[0]
+            pending = con.execute('SELECT COUNT(*) FROM items WHERE media="文档" AND (content_state=0 OR content_mtime<mtime)').fetchone()[0]
+            con.close()
+            self._json({'job': CONTENT_JOB, 'indexed': indexed, 'pending_docs': pending, 'ocr': ocr_available()}); return
+
+        if p == '/api/batchrename':
+            api_batch_rename(self, (q.get('ids') or [''])[0], (q.get('pattern') or [''])[0],
+                             (q.get('start') or ['1'])[0]); return
+        if p == '/api/batchmove':
+            api_batch_move(self, (q.get('ids') or [''])[0], (q.get('dest') or [''])[0],
+                           (q.get('mkdir') or ['0'])[0] == '1'); return
+        if p == '/api/batchconvert':
+            api_batch_convert(self, (q.get('ids') or [''])[0], (q.get('fmt') or ['webp'])[0],
+                              (q.get('quality') or ['85'])[0], (q.get('dest') or [''])[0]); return
+
         self._send(404, 'not found', 'text/plain; charset=utf-8')
 
     def do_HEAD(self):
@@ -969,6 +2103,11 @@ class Handler(BaseHTTPRequestHandler):
         def gv(k, d=''):
             return ((q or {}).get(k) or [d])[0]
         t = gv('type', '')
+        key = ('facets', t, _DATA_VER)
+        cached = _STATS_CACHE.get(key)
+        if cached is not None:
+            self._json(cached)
+            return
         con = connect()
         total = con.execute('SELECT COUNT(*) FROM items').fetchone()[0]
         media = dict(con.execute('SELECT media, COUNT(*) FROM items GROUP BY media').fetchall())
@@ -976,6 +2115,10 @@ class Handler(BaseHTTPRequestHandler):
         locs = con.execute('SELECT loc, COUNT(*) c FROM items GROUP BY loc ORDER BY c DESC LIMIT 60').fetchall()
         subs = con.execute("SELECT cat, sub, COUNT(*) c FROM items WHERE sub<>'' "
                            "GROUP BY cat, sub ORDER BY c DESC LIMIT 80").fetchall()
+        favs = con.execute('SELECT COUNT(*) FROM fav f JOIN items i ON i.id=f.item_id').fetchone()[0]
+        tags = con.execute('SELECT t.name,COUNT(it.item_id) FROM tags t LEFT JOIN item_tags it ON it.tag_id=t.id'
+                           ' JOIN items i ON i.id=it.item_id GROUP BY t.id ORDER BY COUNT(it.item_id) DESC,t.name'
+                           ' LIMIT 80').fetchall()
         if t and t != '全部':
             disks = con.execute("SELECT substr(path,1,2) d, COUNT(*) c FROM items "
                                 "WHERE length(path)>3 AND media=? GROUP BY d ORDER BY d", (t,)).fetchall()
@@ -983,11 +2126,15 @@ class Handler(BaseHTTPRequestHandler):
             disks = con.execute("SELECT substr(path,1,2) d, COUNT(*) c FROM items "
                                 "WHERE length(path)>3 GROUP BY d ORDER BY d").fetchall()
         con.close()
-        self._json({'total': total, 'media': media,
-                    'cats': [{'k': k, 'n': n} for k, n in cats],
-                    'locs': [{'k': k, 'n': n} for k, n in locs],
-                    'disks': [{'k': k, 'n': n} for k, n in disks if k and k[0].isalpha() and k[1] == ':'],
-                    'subs': [{'cat': c, 'k': s, 'n': n} for c, s, n in subs]})
+        data = {'total': total, 'media': media,
+                'cats': [{'k': k, 'n': n} for k, n in cats],
+                'locs': [{'k': k, 'n': n} for k, n in locs],
+                'disks': [{'k': k, 'n': n} for k, n in disks if k and k[0].isalpha() and k[1] == ':'],
+                'subs': [{'cat': c, 'k': s, 'n': n} for c, s, n in subs],
+                'tags': [{'name': k, 'n': n} for k, n in tags], 'fav': favs,
+                'trash': _trash_count()}
+        _STATS_CACHE[key] = data
+        self._json(data)
 
     def api_items(self, q):
         def gv(k, d=''):
@@ -995,7 +2142,9 @@ class Handler(BaseHTTPRequestHandler):
 
         p = {'type': gv('type', '全部'), 'cat': gv('cat', '全部'), 'loc': gv('loc', '全部'),
              'sub': gv('sub', ''), 'q': gv('q', '').strip(), 'ext': gv('ext', ''), 'recent': gv('recent', ''),
-             'disk': gv('disk', '')}
+             'disk': gv('disk', ''), 'tag': gv('tag', ''), 'fav': gv('fav', ''),
+             'orient': gv('orient', ''), 'minw': gv('minw', ''), 'minh': gv('minh', ''),
+             'alpha': gv('alpha', ''), 'durmin': gv('durmin', ''), 'durmax': gv('durmax', '')}
         sort = gv('sort', 'time')
         try:
             offset = max(0, int(gv('offset', '0')))
@@ -1004,36 +2153,49 @@ class Handler(BaseHTTPRequestHandler):
             offset, limit = 0, 120
 
         wsql, args = _filter(p)
-        orders = {'name': 'name COLLATE NOCASE', 'time': 'mtime DESC', 'size': 'size DESC', 'path': 'path COLLATE NOCASE'}
+        orders = {'name': 'name COLLATE NOCASE', 'time': 'mtime DESC', 'size': 'size DESC', 'path': 'path COLLATE NOCASE',
+                  'pixels': '(COALESCE(w,0)*COALESCE(h,0)) DESC'}
         order = orders.get(sort, orders['time'])
 
         con = connect()
         total = con.execute('SELECT COUNT(*) FROM items ' + wsql, args).fetchone()[0]
         rows = con.execute(
-            'SELECT id,name,ext,media,size,mtime,loc,cat,w,h,path,sub FROM items ' + wsql +
+            'SELECT id,name,ext,media,size,mtime,loc,cat,w,h,path,sub,'
+            '(SELECT 1 FROM fav f WHERE f.item_id=items.id) fav,'
+            '(SELECT group_concat(t.name,\'|\') FROM item_tags it JOIN tags t ON t.id=it.tag_id WHERE it.item_id=items.id) tags'
+            ' FROM items ' + wsql +
             ' ORDER BY ' + order + ' LIMIT ? OFFSET ?', args + [limit, offset]).fetchall()
         con.close()
         items = [{'id': r[0], 'name': r[1], 'ext': r[2], 'media': r[3], 'size': r[4],
                   'mtime': r[5], 'loc': r[6], 'cat': r[7], 'w': r[8], 'h': r[9], 'path': r[10],
-                  'sub': r[11] or ''}
+                  'sub': r[11] or '', 'fav': bool(r[12]), 'tags': (r[13] or '').split('|') if r[13] else []}
                  for r in rows]
         self._json({'total': total, 'items': items, 'offset': offset})
 
     def api_item(self, item_id):
         con = connect()
-        r = con.execute('SELECT id,name,ext,media,size,mtime,loc,cat,w,h,path,sub FROM items WHERE id=?',
-                        (item_id,)).fetchone()
+        r = con.execute('SELECT id,name,ext,media,size,mtime,loc,cat,w,h,path,sub,'
+                        '(SELECT 1 FROM fav f WHERE f.item_id=items.id),'
+                        '(SELECT group_concat(t.name,\'|\') FROM item_tags it JOIN tags t ON t.id=it.tag_id WHERE it.item_id=items.id)'
+                        ' FROM items WHERE id=?', (item_id,)).fetchone()
         con.close()
         if not r:
             self._json({'error': 'not found'}, 404)
             return
         self._json({'id': r[0], 'name': r[1], 'ext': r[2], 'media': r[3], 'size': r[4], 'mtime': r[5],
-                    'loc': r[6], 'cat': r[7], 'w': r[8], 'h': r[9], 'path': r[10], 'sub': r[11] or ''})
+                    'loc': r[6], 'cat': r[7], 'w': r[8], 'h': r[9], 'path': r[10], 'sub': r[11] or '',
+                    'fav': bool(r[12]), 'tags': (r[13] or '').split('|') if r[13] else []})
 
     def api_albums(self):
+        key = ('albums', _DATA_VER)
+        cached = _STATS_CACHE.get(key)
+        if cached is not None:
+            self._json(cached)
+            return
         con = connect()
         cats = con.execute('SELECT cat, COUNT(*) c FROM items GROUP BY cat ORDER BY c DESC').fetchall()
         specs = [
+            {'key': 'fav', 'name': '★ 我的收藏', 'type': '全部', 'cat': '全部', 'fav': '1'},
             {'key': 'recent7', 'name': '最近 7 天', 'type': '全部', 'cat': '全部', 'recent': '7'},
             {'key': 'recent30', 'name': '最近 30 天', 'type': '全部', 'cat': '全部', 'recent': '30'},
             {'key': 'all', 'name': '全部素材', 'type': '全部', 'cat': '全部'},
@@ -1051,6 +2213,10 @@ class Handler(BaseHTTPRequestHandler):
                            "GROUP BY cat, sub HAVING c >= 12 ORDER BY c DESC LIMIT 12").fetchall()
         for c, s, n in subs:
             specs.append({'key': 'sub:' + c + '|' + s, 'name': s, 'type': '全部', 'cat': c, 'sub': s})
+        tags = con.execute('SELECT t.name,COUNT(it.item_id) c FROM tags t JOIN item_tags it ON it.tag_id=t.id'
+                           ' JOIN items i ON i.id=it.item_id GROUP BY t.id HAVING c>0 ORDER BY c DESC LIMIT 16').fetchall()
+        for name, n in tags:
+            specs.append({'key': 'tag:' + name, 'name': '# ' + name, 'type': '全部', 'cat': '全部', 'tag': name})
         out = []
         for sp in specs:
             wsql, args = _filter(sp)
@@ -1061,7 +2227,9 @@ class Handler(BaseHTTPRequestHandler):
                 'SELECT id FROM items ' + wsql + ' ORDER BY mtime DESC LIMIT 4', args).fetchall()]
             out.append({'key': sp['key'], 'name': sp['name'], 'n': n, 'covers': covers, 'spec': sp})
         con.close()
-        self._json({'albums': out})
+        data = {'albums': out}
+        _STATS_CACHE[key] = data
+        self._json(data)
 
     def serve_thumb(self, item_id):
         con = connect()
@@ -1335,61 +2503,14 @@ def recycle_file(path):
 
 
 def api_delete(self, item_id):
-    row = _row_path(item_id)
-    if not row:
-        self._json({'ok': False, 'msg': '没有这条记录'}, 404)
-        return
-    path, name = row[0], row[1]
-    if not os.path.exists(path):
-        con = connect()
-        con.execute('DELETE FROM items WHERE id=?', (item_id,))
-        con.commit(); con.close()
-        self._json({'ok': False, 'msg': '文件已不在原位，已清掉这条索引'}, 404)
-        return
-    ok, msg = recycle_file(path)
-    if not ok:
-        self._json({'ok': False, 'msg': msg}, 500)
-        return
-    con = connect()
-    con.execute('DELETE FROM items WHERE id=?', (item_id,))
-    con.commit(); con.close()
-    self._json({'ok': True, 'msg': msg, 'name': name})
+    api_trash_add(self, str(item_id))
 
 
 def api_batch_delete(self, ids_s):
-    ids = []
-    for s in (ids_s or '').split(','):
-        s = s.strip()
-        if s.isdigit() and int(s) > 0 and int(s) not in ids:
-            ids.append(int(s))
-    if not ids:
-        self._json({'ok': False, 'msg': '没有选中任何文件'}, 400)
-        return
-    if len(ids) > 500:
-        self._json({'ok': False, 'msg': '一次最多删 500 个'}, 400)
-        return
-    con = connect()
-    deleted, failed = [], []
-    for item_id in ids:
-        row = con.execute('SELECT path, name FROM items WHERE id=?', (item_id,)).fetchone()
-        if not row:
-            failed.append({'id': item_id, 'msg': '没有这条记录'})
-            continue
-        path, name = row
-        if os.path.exists(path):
-            ok, msg = recycle_file(path)
-            if not ok:
-                failed.append({'id': item_id, 'name': name, 'msg': msg})
-                continue
-        con.execute('DELETE FROM items WHERE id=?', (item_id,))
-        con.commit()
-        deleted.append({'id': item_id, 'name': name})
-    con.close()
-    self._json({'ok': True, 'deleted': len(deleted), 'failed': failed,
-                'names': [d['name'] for d in deleted]})
+    api_trash_add(self, ids_s)
 
 
-
+def api_rename(self, item_id, new_name):
     row = _row_path(item_id)
     if not row:
         self._json({'ok': False, 'msg': '没有这条记录'}, 404)
@@ -1427,6 +2548,7 @@ def api_batch_delete(self, ids_s):
                 (target, new_name, n_ext, st.st_size, int(st.st_mtime),
                  guess_cat(target, media_of(n_ext)), sub_of(target, media_of(n_ext)), item_id))
     con.commit(); con.close()
+    bump_data()
     self._json({'ok': True, 'msg': '已重命名为 ' + new_name, 'name': new_name, 'path': target})
 
 
@@ -1448,11 +2570,27 @@ def api_clip(self, item_id, cut):
 
 
 def find_running():
-    """看看是不是已经有素材库在跑，有就返回它的地址"""
-    for port in range(8765, 8786):
+    """看看是不是已经有素材库在跑，有就返回它的地址（优先读运行端口，避免逐端口探测拖慢启动）"""
+    ports = []
+    try:
+        with open(os.path.join(IDX, 'runtime_port.txt'), 'r', encoding='ascii') as f:
+            p = int(f.read().strip())
+        if 8765 <= p <= 8785:
+            ports.append(p)
+    except Exception:
+        pass
+    ports.append(8765)
+    for port in dict.fromkeys(ports):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.08)
+        try:
+            if s.connect_ex(('127.0.0.1', port)) != 0:
+                continue
+        finally:
+            s.close()
         url = 'http://127.0.0.1:%d/' % port
         try:
-            with urllib.request.urlopen(url + 'api/facets', timeout=0.5) as r:
+            with urllib.request.urlopen(url + 'api/facets', timeout=0.25) as r:
                 data = json.loads(r.read().decode('utf-8'))
             if 'total' in data and 'cats' in data:
                 return url
@@ -1473,8 +2611,20 @@ def db_count():
         return 0
 
 
+def _low_priority():
+    """后台扫描/查重降到低优先级，前台用电脑不被拖慢"""
+    if os.name != 'nt':
+        return
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetThreadPriority(ctypes.windll.kernel32.GetCurrentThread(), -1)
+    except Exception:
+        pass
+
+
 def scan_in_thread():
     """后台扫描，进度写进 PROGRESS，界面上的进度条靠它刷新"""
+    _low_priority()
     try:
         do_scan()
     except Exception as e:
@@ -1505,6 +2655,11 @@ def start_http(quiet=False, defer_scan=False):
     else:
         raise RuntimeError('找不到可用端口')
     url = 'http://127.0.0.1:%d/' % port
+    try:
+        with open(os.path.join(IDX, 'runtime_port.txt'), 'w', encoding='ascii') as f:
+            f.write(str(port))
+    except Exception:
+        pass
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     threading.Thread(target=auto_scan_loop, daemon=True).start()
     if need:
@@ -1718,6 +2873,39 @@ def close_splash(delay=1.2):
     threading.Timer(delay, _close).start()
 
 
+HOTKEY_READY = {'ok': False, 'msg': ''}
+
+
+def register_hotkey(callback, key=0x20, mods=0x0003):
+    """全局 Ctrl+Alt+Space：唤起素材坞并把焦点放到搜索框"""
+    if os.name != 'nt':
+        return False
+
+    def loop():
+        try:
+            import ctypes
+            from ctypes import wintypes
+            u = ctypes.windll.user32
+            u.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
+            u.RegisterHotKey.restype = wintypes.BOOL
+            if not u.RegisterHotKey(None, 917, mods, key):
+                HOTKEY_READY.update(ok=False, msg='快捷键被其他程序占用')
+                return
+            HOTKEY_READY.update(ok=True, msg='Ctrl+Alt+Space 已启用')
+            msg = wintypes.MSG()
+            while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                if msg.message == 0x0312:  # WM_HOTKEY
+                    try:
+                        callback()
+                    except Exception:
+                        pass
+        except Exception as e:
+            HOTKEY_READY.update(ok=False, msg=str(e))
+
+    threading.Thread(target=loop, daemon=True).start()
+    return True
+
+
 def gui():
     """原生窗口模式：不开浏览器、不占命令行窗口"""
     if not acquire_single_instance():
@@ -1733,22 +2921,27 @@ def gui():
         print('GUI 组件不可用（%s），已改用浏览器打开：%s' % (e, url))
         threading.Event().wait()
         return
-    win = webview.create_window('素材坞', html=LOADING_HTML, width=1440, height=920,
+    # 先起服务、再建窗口：有索引时直接进相册，省掉“加载页再跳转”的一次等待
+    try:
+        url, _h, scanning = start_http(quiet=True, defer_scan=True)
+        start_url = url + ('loading' if scanning else '')
+    except Exception as e:
+        url = 'about:blank'
+        start_url = 'data:text/html,' + quote('<body style="background:#0f1116;color:#e8ecf4;font-family:sans-serif;padding:40px">'
+                                              '<h3>启动失败</h3><pre style="color:#e96">%s</pre></body>' % e)
+        scanning = False
+    win = webview.create_window('素材坞', start_url, width=1440, height=920,
                                 min_size=(960, 640), background_color='#0f1116')
 
-    def boot():
+    def hotkey():
+        focus_existing_window('素材坞')
         try:
-            url, _h, scanning = start_http(quiet=True, defer_scan=True)
-            win.load_url(url + ('loading' if scanning else ''))
-            close_splash()
-        except Exception as e:
-            try:
-                win.load_html('<body style="background:#0f1116;color:#e8ecf4;font-family:sans-serif;padding:40px">'
-                              '<h3>启动失败</h3><pre style="color:#e96">%s</pre></body>' % e)
-            except Exception:
-                pass
+            win.evaluate_js('focusSearchFromHotkey && focusSearchFromHotkey()')
+        except Exception:
+            pass
 
-    threading.Thread(target=boot, daemon=True).start()
+    register_hotkey(hotkey)
+    close_splash()
     threading.Thread(target=set_window_icon, daemon=True).start()
     webview.start()
 
@@ -1783,3 +2976,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

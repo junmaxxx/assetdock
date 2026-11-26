@@ -89,6 +89,10 @@ DEFAULT_SKIP = [
     '\\wx\\', '\\wps office\\', '\\jianyingpro\\', '\\adobe\\', '\\dingtalk\\',
     '\\dingding\\', '\\trae cn\\', '\\unity\\', '\\unityinstall\\', '\\godot\\',
     '\\deepseek\\', '\\corelibs\\', '\\zihun', '\\workbuddy\\',
+    # 云盘/同步盘：目录里是占位文件，遍历或 stat 会触发客户端下载
+    '\\wpsdrive\\', '\\wps cloud\\', '\\wps cloud files\\', '\\wps云盘\\',
+    '\\onedrive', '\\dropbox', '\\google drive', '\\icloud drive',
+    '\\baidunetdisk', '\\nutstore', '\\aliyundrive',
     # 工具/调试残留
     '\\app.asar.unpacked\\', '\\.vscode\\', '\\.cdp_open\\', '\\.shots\\',
     '\\node_modules\\', '\\.git\\',
@@ -424,6 +428,12 @@ def get_progress():
     return d
 
 
+def is_cloud_placeholder(st):
+    """Windows 云盘占位文件（离线/按需下载）不要 stat 后继续读，否则会触发下载。"""
+    attrs = getattr(st, 'st_file_attributes', 0) or 0
+    return bool(attrs & (0x1000 | 0x40000 | 0x400000))
+
+
 def do_scan(full=False):
     ensure_dirs()
     roots = load_list('扫描范围.txt', default_roots())
@@ -476,6 +486,10 @@ def do_scan(full=False):
         batch.clear()
 
     for ri, root in enumerate(roots, 1):
+        root_low = os.path.abspath(root).lower().rstrip('\\') + '\\'
+        if any(s in root_low for s in skip):
+            print('  跳过（云盘/规则命中）：' + root)
+            continue
         if not os.path.isdir(root):
             print('  跳过（不存在）：' + root)
             continue
@@ -496,6 +510,8 @@ def do_scan(full=False):
                 try:
                     st = os.stat(fpath)
                 except OSError:
+                    continue
+                if is_cloud_placeholder(st):
                     continue
                 if st.st_size <= 0:
                     continue

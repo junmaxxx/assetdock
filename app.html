@@ -1003,17 +1003,40 @@ async function prepVideo(id, seq){
   }
   if (seq !== playSeq) return;
   if (r.mode === 'direct' || r.mode === 'ready') { attachVideo(id, seq, r.url); return; }
+  if (r.mode === 'unsupported') { showUnsupportedVideo(id, seq, r); return; }
   if (r.mode === 'error') { tpText('这个视频打不开', esc(r.msg || '转码失败')+'<br>可以先用系统播放器看。', true, id, seq); return; }
   pollVideo(id, seq, r);
+}
+
+function showUnsupportedVideo(id, seq, r){
+  if (seq !== playSeq) return;
+  const box = document.querySelector('#lbmedia .tcip'); if (!box) return;
+  const reason = esc(r.reason || 'HEVC/H.265');
+  box.innerHTML = '<div class="tp">这个 MP4 内置播不了</div>'+
+    '<div class="tm">源文件是 '+reason+'，Windows 浏览器内核不支持。<br>可以马上用系统播放器打开，或生成一份 540p 内置预览（可能要十几秒）。</div>'+
+    '<div class="lbact"><button id="tpopen">用系统程序打开</button><button id="tptrans">生成内置预览</button></div>';
+  document.getElementById('tpopen').onclick = () => act('open', id);
+  document.getElementById('tptrans').onclick = async () => {
+    if (seq !== playSeq) return;
+    tpText('正在生成内置预览…', '只生成一次，之后打开秒开。', true, id, seq);
+    let x;
+    try { x = await fetch('/api/playprep/'+id+'?transcode=1', {method:'POST'}).then(y=>y.json()); }
+    catch(e) { tpText('无法准备播放', '本地服务没有响应。', true, id, seq); return; }
+    if (seq !== playSeq) return;
+    if (x.mode === 'transcoding') pollVideo(id, seq, x);
+    else if (x.mode === 'ready') attachVideo(id, seq, x.url);
+    else tpText('这个视频打不开', esc(x.msg || '转码失败')+'<br>可以先用系统播放器看。', true, id, seq);
+  };
 }
 
 async function pollVideo(id, seq, first){
   let r = first || {};
   while (seq === playSeq && r.mode === 'transcoding') {
     const pct = r.pct || 0;
-    tpText('正在转成 MP4… ' + pct + '%',
-      '这个格式浏览器内核不能直接播，第一次打开会转一份缓存，之后秒开。<br>窗口可以先别关，转完会自动开始。',
-      false, id, seq);
+    const why = r.reason ? ('源文件是 ' + r.reason + '，浏览器内核不能直接播；') : '这个格式浏览器内核不能直接播；';
+    tpText('正在生成内置预览… ' + pct + '%',
+      why + '第一次打开会生成一份 540p H.264 缓存，之后秒开。<br>不想等可以先点下面的系统播放器。',
+      true, id, seq);
     await new Promise(res => setTimeout(res, 700));
     if (seq !== playSeq) return;
     try { r = await fetch('/api/playprep/'+id, {method:'POST'}).then(x => x.json()); }

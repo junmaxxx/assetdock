@@ -643,17 +643,35 @@ def _doc_placeholder(out, ext, title):
     return out
 
 
+_PDF_LOCK = threading.Lock()
+
+
 def doc_cover(item_id, path, mtime, ext, out):
     """PDF / PPTX 取第一页或第一张图当封面；老 .ppt 只能出占位封面"""
     try:
         from PIL import Image
         if ext == '.pdf':
             import pypdfium2 as pdfium
-            pdf = pdfium.PdfDocument(path)
-            page = pdf[0]
-            w, _h = page.get_size()
-            scale = max(1.0, 480.0 / max(1, w))
-            im = page.render(scale=scale).to_pil().convert('RGB')
+            # pdfium 不是线程安全的：首页打开时几十张封面同时请求，必须串行，
+            # 否则会出现 pdfium.dll 0xc0000409 整个进程闪退。
+            with _PDF_LOCK:
+                pdf = pdfium.PdfDocument(path)
+                try:
+                    page = pdf[0]
+                    try:
+                        w, _h = page.get_size()
+                        scale = max(1.0, 480.0 / max(1, w))
+                        im = page.render(scale=scale).to_pil().convert('RGB')
+                    finally:
+                        try:
+                            page.close()
+                        except Exception:
+                            pass
+                finally:
+                    try:
+                        pdf.close()
+                    except Exception:
+                        pass
             im.thumbnail((480, 640), Image.LANCZOS)
             os.makedirs(os.path.dirname(out), exist_ok=True)
             im.save(out, 'WEBP', quality=82, method=2)
@@ -828,6 +846,31 @@ def _filter(p):
 PLAY_JOBS = {}
 PLAY_LOCK = threading.Lock()
 _VID_OK = ('h264', 'vp8', 'vp9', 'av1')
+_MP4_CODEC_TAGS = {
+    b'avc1': 'avc1', b'avc3': 'avc3', b'hvc1': 'hvc1', b'hev1': 'hev1',
+    b'av01': 'av01', b'vp09': 'vp09',
+}
+_MP4CODEC = {'avc1': 'h264', 'avc3': 'h264', 'hvc1': 'hevc', 'hev1': 'hevc',
+             'av01': 'av1', 'vp09': 'vp9'}
+
+
+def _mp4_codec_hint(path):
+    """不启动 ffmpeg，直接扫 MP4 头/尾的 sample entry，快速判断编码。
+    这样普通 H.264 MP4 打开时不必再等一次 ffmpeg -i。"""
+    try:
+        size = os.path.getsize(path)
+        data = b''
+        with open(path, 'rb') as f:
+            data = f.read(min(size, 2 * 1024 * 1024))
+            if size > 4 * 1024 * 1024:
+                f.seek(max(0, size - 2 * 1024 * 1024))
+                data += f.read(2 * 1024 * 1024)
+        for tag, name in _MP4_CODEC_TAGS.items():
+            if tag in data:
+                return name
+    except Exception:
+        pass
+    return ''
 
 
 def _ffmpeg_exe():
@@ -883,10 +926,10 @@ def _run_transcode(item_id, src, out, dur):
         flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         cmd = [_ffmpeg_exe(), '-y', '-hide_banner', '-loglevel', 'error',
                '-i', src, '-map', '0:v:0', '-map', '0:a:0?',
-               '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
-               '-vf', 'scale=min(1920\\,iw):min(1920\\,ih):force_original_aspect_ratio=decrease:force_divisible_by=2',
-               '-pix_fmt', 'yuv420p',
-               '-c:a', 'aac', '-b:a', '128k', '-ac', '2',
+               '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '26',
+               '-vf', 'scale=min(960\\,iw):min(960\\,ih):force_original_aspect_ratio=decrease:force_divisible_by=2',
+               '-pix_fmt', 'yuv420p', '-threads', '4',
+               '-c:a', 'aac', '-b:a', '96k', '-ac', '2',
                '-movflags', '+faststart', '-progress', 'pipe:1', '-nostats', tmp]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, text=True, bufsize=1,
@@ -930,28 +973,37 @@ def _run_transcode(item_id, src, out, dur):
             job['msg'] = '转码失败：' + str(e)[:160]
 
 
-def play_state(item_id, path, mtime, ext):
-    """返回 {'mode': direct/ready/transcoding/error, 'url','pct','msg'}"""
+def play_state(item_id, path, mtime, ext, allow_transcode=True):
+    """返回 {'mode': direct/ready/transcoding/unsupported/error, 'url','pct','msg','reason'}"""
+    codec, reason = '', (ext or '').lstrip('.').upper() + ' 格式'
     if ext in DIRECT_VIDEO:
-        _dur, vc = _probe_video(path)
-        if (not vc) or vc in _VID_OK:
+        if ext in ('.mp4', '.m4v'):
+            tag = _mp4_codec_hint(path)
+            codec = _MP4CODEC.get(tag, '')
+            if not codec or codec in _VID_OK:
+                return {'mode': 'direct', 'url': '/file/%d' % item_id, 'codec': codec}
+            reason = 'MP4 的 %s 编码' % ('HEVC/H.265' if codec == 'hevc' else codec.upper())
+        else:
             return {'mode': 'direct', 'url': '/file/%d' % item_id}
     out = play_cache_path(item_id, mtime)
     if os.path.exists(out) and os.path.getsize(out) > 1024:
         return {'mode': 'ready', 'url': '/play/%d' % item_id}
     job = PLAY_JOBS.get(item_id)
     if job is None:
+        if not allow_transcode:
+            return {'mode': 'unsupported', 'reason': reason, 'codec': codec, 'can_transcode': True}
         dur, _vc = _probe_video(path)
         _clean_play_cache()
-        job = {'state': 'running', 'pct': 0, 'msg': '正在转码', 't0': time.time()}
+        job = {'state': 'running', 'pct': 0, 'msg': '正在生成预览', 't0': time.time()}
         PLAY_JOBS[item_id] = job
         threading.Thread(target=_run_transcode, args=(item_id, path, out, dur),
                          daemon=True).start()
     if job.get('state') == 'error':
-        return {'mode': 'error', 'msg': job.get('msg') or '转码失败'}
+        return {'mode': 'error', 'msg': job.get('msg') or '转码失败', 'reason': reason}
     if job.get('state') == 'ready':
         return {'mode': 'ready', 'url': '/play/%d' % item_id}
-    return {'mode': 'transcoding', 'pct': job.get('pct', 0), 'msg': job.get('msg', '正在转码')}
+    return {'mode': 'transcoding', 'pct': job.get('pct', 0), 'msg': job.get('msg', '正在生成预览'),
+            'reason': reason}
 
 
 # ---------------- HTTP ----------------
@@ -1651,17 +1703,34 @@ def ocr_file(path):
 def pdf_text(path):
     try:
         import pypdfium2 as pdfium
-        pdf = pdfium.PdfDocument(path)
         out = []
-        for i in range(min(len(pdf), 30)):
+        with _PDF_LOCK:
+            pdf = pdfium.PdfDocument(path)
             try:
-                out.append(pdf[i].get_textpage().get_text_range())
-            except Exception:
-                pass
-        try:
-            pdf.close()
-        except Exception:
-            pass
+                for i in range(min(len(pdf), 30)):
+                    page = textpage = None
+                    try:
+                        page = pdf[i]
+                        textpage = page.get_textpage()
+                        out.append(textpage.get_text_range())
+                    except Exception:
+                        pass
+                    finally:
+                        try:
+                            if textpage is not None:
+                                textpage.close()
+                        except Exception:
+                            pass
+                        try:
+                            if page is not None:
+                                page.close()
+                        except Exception:
+                            pass
+            finally:
+                try:
+                    pdf.close()
+                except Exception:
+                    pass
         return _clean_text(' '.join(out))
     except Exception:
         return ''
@@ -1991,7 +2060,7 @@ class Handler(BaseHTTPRequestHandler):
 
         m = re.match(r'^/api/playprep/(\d+)$', p)
         if m:
-            self.api_playprep(int(m.group(1)))
+            self.api_playprep(int(m.group(1)), q)
             return
 
         m = re.match(r'^/api/open/(\d+)$', p)
@@ -2382,7 +2451,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_path(out, 'video/mp4')
 
-    def api_playprep(self, item_id):
+    def api_playprep(self, item_id, q=None):
+        allow = ((q or {}).get('transcode') or ['0'])[0] in ('1', 'true', 'yes')
         con = connect()
         row = con.execute('SELECT path, ext, mtime FROM items WHERE id=?', (item_id,)).fetchone()
         con.close()
@@ -2394,7 +2464,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({'ok': False, 'mode': 'error', 'msg': '文件已不在原位'})
             return
         try:
-            st = play_state(item_id, path, mtime, ext)
+            st = play_state(item_id, path, mtime, ext, allow_transcode=allow)
             st['ok'] = st.get('mode') != 'error'
             self._json(st)
         except Exception as e:

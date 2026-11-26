@@ -374,7 +374,7 @@
   <span>Ctrl+滚轮 缩放界面</span>
   <span>Ctrl+Alt+Space 唤起搜索</span>
   <span>后台每 15 分钟自动补扫，新素材自动出现</span>
-  <span style="margin-left:auto;color:#3f4657">素材坞 v1.6.2 · 本地运行</span>
+  <span style="margin-left:auto;color:#3f4657">素材坞 v1.6.3 · 本地运行</span>
 </footer>
 
 <div id="batchbar">
@@ -434,6 +434,7 @@
   <div class="media" id="lbmedia"></div>
   <div class="lbinfo" id="lbinfo"></div>
   <div class="lbact">
+    <button id="bmpv" style="display:none">用内置播放器打开</button>
     <button id="bopen">用系统程序打开</button>
     <button id="breveal">打开文件所在位置</button>
     <button id="bcopy">复制完整路径</button>
@@ -941,6 +942,7 @@ function openItem(id){
 function openDocCover(id){
   const it = itemOf(id); if (!it) return;
   curId = id;
+  document.getElementById('bmpv').style.display = 'none';
   const media = document.getElementById('lbmedia');
   media.classList.remove('aud');
   media.classList.add('docw');
@@ -958,6 +960,7 @@ let playSeq = 0;
 function openPlayer(id){
   const it = itemOf(id); if (!it) return;
   curId = id;
+  document.getElementById('bmpv').style.display = '';
   const seq = ++playSeq;
   const media = document.getElementById('lbmedia');
   media.classList.toggle('aud', it.media !== '视频');
@@ -1003,6 +1006,7 @@ async function prepVideo(id, seq){
   }
   if (seq !== playSeq) return;
   if (r.mode === 'direct' || r.mode === 'ready') { attachVideo(id, seq, r.url); return; }
+  if (r.mode === 'mpv') { mpvPlay(id, true, r.reason); return; }
   if (r.mode === 'unsupported') { showUnsupportedVideo(id, seq, r); return; }
   if (r.mode === 'error') { tpText('这个视频打不开', esc(r.msg || '转码失败')+'<br>可以先用系统播放器看。', true, id, seq); return; }
   pollVideo(id, seq, r);
@@ -1195,13 +1199,17 @@ async function act(kind, id){
 function copyText(t, msg){
   navigator.clipboard.writeText(t).then(()=>toast(msg)).catch(()=>toast('复制失败'));
 }
-async function mpvPlay(id, closeHtml){
+async function mpvPlay(id, closeHtml, reason){
   const r = await fetch('/api/mpvplay/'+id, {method:'POST'}).then(r=>r.json()).catch(()=>({ok:false,msg:'请求失败'}));
   if (r.ok) {
-    toast('已用内置播放器打开');
+    toast('已打开独立播放窗口');
     if (closeHtml) closeLb();
   } else {
-    toast('内置播放器打不开：' + (r.msg || '未知错误'));
+    const msg = '内置播放器打不开：' + (r.msg || '未知错误');
+    toast(msg);
+    if (closeHtml && document.getElementById('lb').classList.contains('on')) {
+      tpText('内置播放器打不开', esc(msg)+(reason ? '<br>源文件：'+esc(reason) : ''), true, id, playSeq);
+    }
   }
 }
 
@@ -1342,6 +1350,7 @@ document.addEventListener('click', e => { if (!e.target.closest('#ctx')) hideCtx
 window.addEventListener('blur', hideCtx);
 
 
+document.getElementById('bmpv').onclick = () => { if (curId) mpvPlay(curId, true); };
 document.getElementById('bopen').onclick = () => { if (curId) act('open', curId); };
 document.getElementById('breveal').onclick = () => { if (curId) act('reveal', curId); };
 document.getElementById('bcopy').onclick = () => {

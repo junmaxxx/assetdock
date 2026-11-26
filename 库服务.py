@@ -1018,7 +1018,7 @@ def launch_mpv(path, title):
 
 
 def play_state(item_id, path, mtime, ext, allow_transcode=True):
-    """返回 {'mode': direct/ready/transcoding/unsupported/error, 'url','pct','msg','reason'}"""
+    """返回 {'mode': direct/ready/mpv/transcoding/unsupported/error, 'url','pct','msg','reason'}"""
     codec, reason = '', (ext or '').lstrip('.').upper() + ' 格式'
     if ext in DIRECT_VIDEO:
         if ext in ('.mp4', '.m4v'):
@@ -1029,6 +1029,10 @@ def play_state(item_id, path, mtime, ext, allow_transcode=True):
             reason = 'MP4 的 %s 编码' % ('HEVC/H.265' if codec == 'hevc' else codec.upper())
         else:
             return {'mode': 'direct', 'url': '/file/%d' % item_id}
+    # 浏览器内核播不了的（MOV/MKV/AVI、HEVC MP4…）优先交给内置 mpv 直接播；
+    # 只有显式请求 transcode=1 时才走 540p 预览转码。
+    if not allow_transcode and mpv_exe():
+        return {'mode': 'mpv', 'reason': reason, 'codec': codec}
     out = play_cache_path(item_id, mtime)
     if os.path.exists(out) and os.path.getsize(out) > 1024:
         return {'mode': 'ready', 'url': '/play/%d' % item_id}

@@ -374,6 +374,16 @@
     border-radius:10px;display:flex;align-items:center;justify-content:center;overflow:hidden}
   .dsp_media img{max-width:100%;max-height:48vh;object-fit:contain;display:block}
   .dsp_media .ph{font-size:38px;color:#6f778b}
+  .isrclist{max-height:150px;overflow:auto;margin-top:8px;border:1px solid rgba(60,70,92,.55);
+    border-radius:10px;background:rgba(13,16,23,.55)}
+  .isrow{display:flex;align-items:center;gap:9px;padding:7px 9px;border-bottom:1px solid rgba(60,70,92,.38)}
+  .isrow:last-child{border-bottom:0}
+  .isrow .nm{flex:1;min-width:0;font-size:12px;color:#dfe5f2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .isrow .st{font-size:10.5px;color:#7f879a;white-space:nowrap}
+  .isrow button{background:rgba(26,31,43,.9);border:1px solid var(--line2);color:#dfe5f2;
+    border-radius:7px;padding:4px 8px;font-size:10.5px;cursor:pointer}
+  .isrow button:hover{border-color:rgba(139,125,255,.7)}
+  .isempty{padding:14px 10px;text-align:center;color:#7f879a;font-size:12px}
 </style>
 </head>
 <body>
@@ -390,7 +400,7 @@
       <input id="q" placeholder="搜文件名、路径或内容，例如 气球 / 充值 / 角色名">
       <div class="qmode" id="qmode">
         <button class="qm on" type="button" data-qm="local" title="本地搜索">本地搜索</button>
-        <button class="qm" type="button" data-qm="web" title="全网搜索">全网搜索</button>
+        <button class="qm" type="button" data-qm="web" title="自建索引搜索">索引搜索</button>
       </div>
     </div>
     <select id="sortsel" class="sel">
@@ -425,7 +435,7 @@
   <span>Ctrl+滚轮 缩放界面</span>
   <span>Ctrl+Alt+Space 唤起搜索</span>
   <span>后台每 15 分钟自动补扫，新素材自动出现</span>
-  <span style="margin-left:auto;color:#3f4657">素材坞 v1.7.1 · 本地运行</span>
+  <span style="margin-left:auto;color:#3f4657">素材坞 v1.8.0 · 本地运行</span>
 </footer>
 
 <div id="batchbar">
@@ -498,7 +508,7 @@
   <div class="pbox narrow">
     <div class="phead"><b>工具与维护</b><button class="pclose" data-close="toolpanel">✕</button></div>
     <div class="toolgrid">
-      <button class="tool" id="open-discover"><span class="ti">◎</span><span><b>资源搜索</b><em>公开源聚合 + 站点嗅探 + 隔离下载</em></span></button>
+      <button class="tool" id="open-discover"><span class="ti">◎</span><span><b>资源搜索</b><em>自建索引 + 公开源 + 隔离下载</em></span></button>
       <button class="tool" id="open-trash"><span class="ti">🗑</span><span><b>待删除箱</b><em id="trashcnt">0 项 · 可还原</em></span></button>
       <button class="tool" id="open-dupe"><span class="ti">⧉</span><span><b>重复与相似</b><em>清理占空间的重复图</em></span></button>
       <button class="tool" id="open-content"><span class="ti">⌕</span><span><b>内容索引</b><em>OCR 截图、PDF 正文</em></span></button>
@@ -525,12 +535,39 @@
 <!-- 资源搜索 -->
 <div id="discoverpanel" class="panel">
   <div class="pbox full">
-    <div class="phead"><b>资源搜索</b><span class="mini" id="dsstat">搜公开可访问资源，下载先隔离校验</span><button class="pclose" data-close="discoverpanel">✕</button></div>
+    <div class="phead"><b>资源搜索</b><span class="mini" id="dsstat">自建索引或公开源，下载先隔离校验</span><button class="pclose" data-close="discoverpanel">✕</button></div>
     <div class="dstabs">
-      <button class="dst on" data-mode="search">聚合搜索</button>
+      <button class="dst on" data-mode="index">自建索引</button>
+      <button class="dst" data-mode="search">公开源</button>
       <button class="dst" data-mode="site">站点嗅探</button>
     </div>
-    <div id="dssearch">
+    <div id="dsindex">
+      <div class="trow">
+        <input id="dsindexurl" class="ipt dsq" placeholder="添加要抓的站点，例如 https://example.com/gallery" spellcheck="false">
+        <button class="ghost" id="dsindexadd">添加源</button>
+      </div>
+      <div class="trow">
+        <button class="ghost" id="dsindexcrawl">更新全部索引</button>
+        <span class="mini" id="dsindexstat">还没有索引源</span>
+        <span class="mini" id="dsindexjob"></span>
+      </div>
+      <div class="isrclist" id="dsindexlist"><div class="isempty">添加站点后，点「更新索引」把公开页面里的媒体抓进本地索引。</div></div>
+      <div class="trow">
+        <input id="dsiq" class="ipt dsq" placeholder="搜自建索引，例如 气球 / 角色名 / 蛋糕" spellcheck="false">
+        <button class="ghost" id="dsigo">搜索索引</button>
+      </div>
+      <div class="trow" id="dsikindrow">
+        <span class="mini">类型</span>
+        <button class="dchip on" data-ikind="all">全部</button>
+        <button class="dchip" data-ikind="image">图片</button>
+        <button class="dchip" data-ikind="video">视频</button>
+        <button class="dchip" data-ikind="audio">音频</button>
+        <button class="dchip" data-ikind="doc">文档</button>
+      </div>
+      <div class="trow" id="dsisourcerow"><span class="mini">源</span></div>
+      <div class="mini">只抓 robots.txt 允许的公开页面，同域限速；每条结果保留来源页和授权提示，下载仍走隔离区校验。</div>
+    </div>
+    <div id="dssearch" style="display:none">
       <div class="trow">
         <input id="dsq" class="ipt dsq" placeholder="关键词，例如 小猫 / 蛋糕 / 蒸汽波 / 论文" spellcheck="false">
         <button class="ghost" id="dsgo">搜索</button>
@@ -544,7 +581,7 @@
         <button class="dchip" data-kind="doc">文档</button>
       </div>
       <div class="trow" id="dssourcerow"><span class="mini">来源</span></div>
-      <div class="mini">Bing 图片覆盖广但版权未知；arXiv / OpenAlex 是开放论文。视频和音频请用「站点嗅探」。Google 在当前网络不可达，未接入。</div>
+      <div class="mini">公开源是兜底：Bing 图片覆盖广但版权未知；arXiv / OpenAlex 是开放论文。主力请用「自建索引」。</div>
     </div>
     <div id="dssite" style="display:none">
       <div class="trow">
@@ -946,7 +983,7 @@ let qt;
 let QMODE = 'local';
 const Q_PLACEHOLDER = {
   local: '搜文件名、路径或内容，例如 气球 / 充值 / 角色名',
-  web: '搜公开资源，例如 小猫 / 蛋糕 / 论文'
+  web: '搜自建索引，例如 气球 / 角色名 / 蛋糕'
 };
 function setQMode(mode){
   QMODE = mode === 'web' ? 'web' : 'local';
@@ -1865,8 +1902,9 @@ document.getElementById('cvbtn').onclick = async () => {
 };
 
 /* ---------- 资源搜索 ---------- */
-let DISC = {mode:'search', kind:'all', sources:new Set(), srcLoaded:false, items:[], cur:null,
-            quarantine:null, downloading:false, timer:null};
+let DISC = {mode:'index', kind:'all', sources:new Set(), srcLoaded:false,
+            isources:new Set(), isrcLoaded:false, ikind:'all',
+            items:[], cur:null, quarantine:null, downloading:false, timer:null, ipolling:false};
 function discUrl(url){ return '/api/discover/thumb?url=' + encodeURIComponent(url || ''); }
 function discKindText(k){ return ({'图片':'图片','视频':'视频','音频':'音频','文档':'文档'})[k] || k || '资源'; }
 function discIco(k){ return k === '图片' ? '🖼' : k === '视频' ? '🎬' : k === '音频' ? '🎵' : '📄'; }
@@ -1885,32 +1923,100 @@ async function loadDiscSources(){
   });
   DISC.srcLoaded = true;
 }
+async function loadIndexSources(){
+  const list = document.getElementById('dsindexlist');
+  const row = document.getElementById('dsisourcerow');
+  let r = null;
+  try { r = await fetch('/api/index/sources').then(x=>x.json()); } catch(e) {}
+  const srcs = (r && r.sources) || [];
+  DISC.isources = new Set(srcs.map(x => String(x.id)));
+  document.getElementById('dsindexstat').textContent = srcs.length
+    ? (srcs.length + ' 个源 · ' + (r.total_items || 0) + ' 条索引') : '还没有索引源';
+  if (!srcs.length) {
+    list.innerHTML = '<div class="isempty">添加站点后，点「更新索引」把公开页面里的媒体抓进本地索引。</div>';
+    row.innerHTML = '<span class="mini">源</span><span class="mini">还没有源</span>';
+  } else {
+    list.innerHTML = srcs.map(x => {
+      const st = x.last_status === 'ok' ? '已索引'
+        : x.last_status === '抓取中' ? '抓取中…'
+        : x.last_status === 'error' ? '失败' : '未抓取';
+      const cnt = (x.page_count || 0) + ' 页 / ' + (x.item_count || 0) + ' 条';
+      return '<div class="isrow" data-sid="' + x.id + '">' +
+        '<span class="nm" title="' + esc(x.url + ' · ' + (x.last_error || '')) + '">' + esc(x.name || x.url) + '</span>' +
+        '<span class="st">' + st + ' · ' + cnt + '</span>' +
+        '<button data-crawl="' + x.id + '">更新</button>' +
+        '<button data-del="' + x.id + '">移除</button></div>';
+    }).join('');
+    list.querySelectorAll('[data-crawl]').forEach(b => b.onclick = () => startIndexCrawl(+b.dataset.crawl));
+    list.querySelectorAll('[data-del]').forEach(b => b.onclick = () => removeIndexSource(+b.dataset.del));
+    row.innerHTML = '<span class="mini">源</span>' + srcs.map(x =>
+      '<button class="dchip on" data-isource="' + x.id + '" title="' + esc(x.url) + '">' + esc(x.name || x.url) + '</button>').join('');
+    row.querySelectorAll('[data-isource]').forEach(b => b.onclick = () => {
+      const k = String(b.dataset.isource);
+      if (DISC.isources.has(k)) DISC.isources.delete(k); else DISC.isources.add(k);
+      b.classList.toggle('on', DISC.isources.has(k));
+    });
+  }
+  DISC.isrcLoaded = true;
+}
+async function startIndexCrawl(id){
+  const body = {id: id || 0};
+  const r = await fetch('/api/index/crawl', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)}).then(x=>x.json()).catch(()=>({ok:false,msg:'请求失败'}));
+  if (!r.ok) { toast(r.msg || '启动失败'); return; }
+  toast(id ? '正在更新这个源…' : '正在更新全部索引…');
+  if (!DISC.ipolling) { DISC.ipolling = true; indexPoll(); }
+}
+async function indexPoll(){
+  const j = (await fetch('/api/index/status').then(x=>x.json()).catch(()=>({}))).job || {};
+  document.getElementById('dsindexjob').textContent = j.msg || '';
+  document.getElementById('dsprog').style.width = (j.progress || 0) + '%';
+  if (j.running) {
+    setTimeout(indexPoll, 1100);
+    return;
+  }
+  DISC.ipolling = false;
+  document.getElementById('dsprog').style.width = '100%';
+  await loadIndexSources();
+}
+async function removeIndexSource(id){
+  const r = await fetch('/api/index/source/remove', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id})}).then(x=>x.json()).catch(()=>({ok:false,msg:'请求失败'}));
+  if (!r.ok) { toast(r.msg || '移除失败'); return; }
+  toast('已移除，索引条目一起清掉');
+  await loadIndexSources();
+}
+async function addIndexSource(){
+  const u = document.getElementById('dsindexurl').value.trim();
+  if (!u) { toast('先填站点地址'); return; }
+  const r = await fetch('/api/index/source/add', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({url:u})}).then(x=>x.json()).catch(()=>({ok:false,msg:'请求失败'}));
+  if (!r.ok) { toast(r.msg || '添加失败'); return; }
+  document.getElementById('dsindexurl').value = '';
+  toast(r.msg || '已添加');
+  await loadIndexSources();
+  startIndexCrawl(r.id);
+}
 function discSetMode(mode){
   DISC.mode = mode;
   document.querySelectorAll('.dst').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+  document.getElementById('dsindex').style.display = mode === 'index' ? '' : 'none';
   document.getElementById('dssearch').style.display = mode === 'search' ? '' : 'none';
   document.getElementById('dssite').style.display = mode === 'site' ? '' : 'none';
-  document.getElementById('dsmsg').textContent = mode === 'search'
-    ? '输入关键词开始搜索。' : '输入站点地址，抓取公开页面里的媒体直链。';
+  document.getElementById('dsmsg').textContent = mode === 'index'
+    ? '添加站点后更新索引，再用关键词搜索。'
+    : (mode === 'search' ? '输入关键词搜索公开源。' : '输入站点地址，抓取公开页面里的媒体直链。');
 }
 async function openDiscover(query){
-  if (!DISC.srcLoaded) await loadDiscSources();
-  if (query) {
-    discSetMode('search');
-    DISC.kind = 'all';
-    document.querySelectorAll('#dskindrow .dchip').forEach(x => x.classList.toggle('on', x.dataset.kind === 'all'));
-    if (!DISC.sources.size) {
-      document.querySelectorAll('#dssourcerow [data-source]').forEach(b => {
-        DISC.sources.add(b.dataset.source); b.classList.add('on');
-      });
-    }
-  }
+  if (!DISC.isrcLoaded) await loadIndexSources();
+  if (!DISC.srcLoaded) loadDiscSources();
+  discSetMode('index');
   openPanel('discoverpanel');
   if (query) {
-    document.getElementById('dsq').value = query;
-    discSearch();
+    document.getElementById('dsiq').value = query;
+    indexSearch();
   } else {
-    setTimeout(() => document.getElementById('dsq').focus(), 80);
+    setTimeout(() => document.getElementById('dsiq').focus(), 80);
   }
 }
 function discCard(it, i){
@@ -1934,7 +2040,8 @@ function discPaint(j){
   document.getElementById('dsmsg').textContent = j.msg || j.note || (items.length ? '点卡片预览，下载会先进隔离区校验。' : '没有找到结果。');
   document.getElementById('dsprog').style.width = items.length ? '100%' : '0%';
   if (!items.length) {
-    results.innerHTML = '<div class="empty" style="grid-column:1/-1;margin:30px auto"><h2>没有找到资源</h2><p>换个关键词，或改用「站点嗅探」。</p></div>';
+    const hint = DISC.mode === 'index' ? '先在「自建索引」里添加源并更新，或换个关键词。' : '换个关键词，或改用「站点嗅探」。';
+    results.innerHTML = '<div class="empty" style="grid-column:1/-1;margin:30px auto"><h2>没有找到资源</h2><p>' + hint + '</p></div>';
     return;
   }
   results.innerHTML = items.map(discCard).join('');
@@ -1965,6 +2072,23 @@ async function discSearch(){
     discPaint(j);
   } catch(e) {
     document.getElementById('dsmsg').textContent = '搜索失败：' + e;
+    document.getElementById('dsprog').style.width = '0%';
+  }
+}
+async function indexSearch(){
+  const q = document.getElementById('dsiq').value.trim();
+  if (!q) { toast('先输入关键词'); return; }
+  if (!DISC.isources.size) { toast('先添加索引源并更新索引'); return; }
+  document.getElementById('dsmsg').textContent = '正在搜索自建索引…';
+  document.getElementById('dsstat').textContent = '搜索中…';
+  document.getElementById('dsprog').style.width = '45%';
+  const kinds = DISC.ikind === 'all' ? '' : DISC.ikind;
+  const url = '/api/index/search?q=' + encodeURIComponent(q) + '&kinds=' + kinds +
+              '&sources=' + [...DISC.isources].join(',') + '&limit=160';
+  try {
+    discPaint(await fetch(url).then(x=>x.json()));
+  } catch(e) {
+    document.getElementById('dsmsg').textContent = '索引搜索失败：' + e;
     document.getElementById('dsprog').style.width = '0%';
   }
 }
@@ -2016,6 +2140,7 @@ function openDsPreview(i){
   if (it.author) metas.push('作者：' + esc(it.author));
   if (it.license) metas.push('许可：' + esc(it.license));
   if (it.desc) metas.push(esc(it.desc));
+  if (it.page) metas.push('<a href="' + esc(it.page) + '" target="_blank" rel="noreferrer" style="color:#8b7dff">打开来源页</a>');
   document.getElementById('dsp_meta').innerHTML = metas.join('<br>') || '来源页只作记录，预览不加载原站脚本。';
   document.getElementById('dsp_status').textContent = '';
   document.getElementById('dsp_bar').style.width = '0%';
@@ -2080,16 +2205,30 @@ async function dsIngest(){
   loadFacets();
   if (S.view === 'grid') resetAndLoad(); else showAlbums();
 }
-document.querySelectorAll('.dst').forEach(b => b.onclick = () => discSetMode(b.dataset.mode));
+document.querySelectorAll('.dst').forEach(b => b.onclick = () => {
+  const mode = b.dataset.mode;
+  if (mode === 'index' && !DISC.isrcLoaded) loadIndexSources();
+  if (mode === 'search' && !DISC.srcLoaded) loadDiscSources();
+  discSetMode(mode);
+});
 document.querySelectorAll('#dskindrow .dchip').forEach(b => b.onclick = () => {
   DISC.kind = b.dataset.kind;
   document.querySelectorAll('#dskindrow .dchip').forEach(x => x.classList.toggle('on', x === b));
 });
+document.querySelectorAll('#dsikindrow .dchip').forEach(b => b.onclick = () => {
+  DISC.ikind = b.dataset.ikind;
+  document.querySelectorAll('#dsikindrow .dchip').forEach(x => x.classList.toggle('on', x === b));
+});
 document.getElementById('dsgo').onclick = discSearch;
+document.getElementById('dsigo').onclick = indexSearch;
+document.getElementById('dsindexadd').onclick = addIndexSource;
+document.getElementById('dsindexcrawl').onclick = () => startIndexCrawl(0);
 document.getElementById('dssitego').onclick = discSite;
 document.getElementById('dsp_dl').onclick = dsDownload;
 document.getElementById('dsp_ingest').onclick = dsIngest;
 document.getElementById('dsq').addEventListener('keydown', e => { if (e.key === 'Enter') discSearch(); });
+document.getElementById('dsiq').addEventListener('keydown', e => { if (e.key === 'Enter') indexSearch(); });
+document.getElementById('dsindexurl').addEventListener('keydown', e => { if (e.key === 'Enter') addIndexSource(); });
 document.getElementById('dssiteurl').addEventListener('keydown', e => { if (e.key === 'Enter') discSite(); });
 document.getElementById('dssiteq').addEventListener('keydown', e => { if (e.key === 'Enter') discSite(); });
 /* 旧接口保留：外部脚本若还在调用 openDiscover，会走上面的新实现 */

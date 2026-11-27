@@ -67,8 +67,15 @@ APP_HTML = os.path.join(TOOLS, 'app.html')
 DISCOVER_DIR = os.path.join(IDX, '资源下载')
 DISCOVER_QUAR = os.path.join(DISCOVER_DIR, '_隔离')
 DISCOVER_THUMB = os.path.join(IDX, '资源预览')
+# v1.8：自建资源索引。只存页面/媒体元数据，不复制文件；和公开源搜索分开存。
+INDEX_DB = os.path.join(IDX, '资源索引.db')
+INDEX_MAX_PAGES = 80
+INDEX_MAX_ITEMS = 1200
+INDEX_JOB = {'running': False, 'phase': 'idle', 'msg': '', 'progress': 0, 'source': '',
+             'pages': 0, 'items': 0, 'error': '', 'started': 0}
+INDEX_LOCK = threading.Lock()
 DISCOVER_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-               '(KHTML, like Gecko) Chrome/124.0 Safari/537.36 AssetDock/1.7.0')
+               '(KHTML, like Gecko) Chrome/124.0 Safari/537.36 AssetDock/1.8.0')
 DISCOVER_MAX_DL = 200 * 1024 * 1024
 DISCOVER_MAX_HTML = 6 * 1024 * 1024
 DISCOVER_MAX_THUMB = 14 * 1024 * 1024
@@ -3307,6 +3314,369 @@ def discover_site(url, q='', kinds='', max_pages=5, max_items=80, allow_private=
             'note': '只提取页面里公开的媒体直链；个人站点资源默认有版权，使用前请确认授权。'}
 
 
+# ---------- v1.8 自建资源索引 ----------
+# 设计目标：不依赖搜索引擎 API，把用户指定的公开站点抓成自己的本地索引。
+# 只存标题/媒体 URL/来源页/时间，不复制文件；抓取遵守 robots.txt，同域限速。
+
+def _index_conn():
+    os.makedirs(IDX, exist_ok=True)
+    con = sqlite3.connect(INDEX_DB, timeout=30)
+    con.row_factory = sqlite3.Row
+    con.executescript("""
+    CREATE TABLE IF NOT EXISTS sources(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      url TEXT UNIQUE NOT NULL,
+      name TEXT DEFAULT '',
+      enabled INTEGER DEFAULT 1,
+      added_at INTEGER DEFAULT 0,
+      last_crawl INTEGER DEFAULT 0,
+      last_status TEXT DEFAULT '',
+      last_error TEXT DEFAULT '',
+      page_count INTEGER DEFAULT 0,
+      item_count INTEGER DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS pages(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_id INTEGER NOT NULL,
+      url TEXT NOT NULL,
+      title TEXT DEFAULT '',
+      fetched_at INTEGER DEFAULT 0,
+      run_id INTEGER DEFAULT 0,
+      UNIQUE(source_id, url)
+    );
+    CREATE TABLE IF NOT EXISTS items(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_id INTEGER NOT NULL,
+      page_url TEXT DEFAULT '',
+      url TEXT NOT NULL,
+      name TEXT DEFAULT '',
+      kind TEXT DEFAULT '',
+      license TEXT DEFAULT '',
+      author TEXT DEFAULT '',
+      thumb TEXT DEFAULT '',
+      desc TEXT DEFAULT '',
+      search_text TEXT DEFAULT '',
+      found_at INTEGER DEFAULT 0,
+      run_id INTEGER DEFAULT 0,
+      UNIQUE(source_id, url)
+    );
+    CREATE INDEX IF NOT EXISTS idx_isource ON items(source_id);
+    CREATE INDEX IF NOT EXISTS idx_ikind ON items(kind);
+    CREATE INDEX IF NOT EXISTS idx_ipage ON pages(source_id);
+    """)
+    return con
+
+
+def _index_job(**kw):
+    with INDEX_LOCK:
+        INDEX_JOB.update(kw)
+
+
+def index_status():
+    with INDEX_LOCK:
+        return dict(INDEX_JOB)
+
+
+def _index_norm_source(url):
+    u = (url or '').strip()
+    if not u:
+        raise ValueError('请输入站点地址')
+    if not re.match(r'^https?://', u, re.I):
+        u = 'https://' + u.lstrip('/')
+    u = u.split('#')[0]
+    u = _safe_remote_url(u)
+    p = urlparse(u)
+    if not p.hostname:
+        raise ValueError('地址缺少域名')
+    base = '%s://%s' % (p.scheme.lower(), p.netloc.lower())
+    return u, base, p.hostname.lower()
+
+
+def index_sources():
+    con = _index_conn()
+    rows = con.execute('SELECT id,url,name,enabled,added_at,last_crawl,last_status,last_error,'
+                       'page_count,item_count FROM sources ORDER BY id DESC').fetchall()
+    con.close()
+    return {'ok': True, 'sources': [dict(r) for r in rows],
+            'total_items': sum(int(r['item_count'] or 0) for r in rows)}
+
+
+def index_add_source(url, name=''):
+    try:
+        u, base, host = _index_norm_source(url)
+    except Exception as e:
+        return {'ok': False, 'msg': str(e)}
+    con = _index_conn()
+    if con.execute('SELECT id FROM sources WHERE url=?', (u,)).fetchone():
+        con.close()
+        return {'ok': False, 'msg': '这个源已经在索引里了'}
+    nm = (name or '').strip()[:80] or host
+    con.execute('INSERT INTO sources(url,name,added_at,last_status) VALUES(?,?,?,?)',
+                (u, nm, int(time.time()), '未抓取'))
+    con.commit()
+    sid = con.execute('SELECT id FROM sources WHERE url=?', (u,)).fetchone()[0]
+    con.close()
+    return {'ok': True, 'id': sid, 'name': nm, 'url': u, 'msg': '已添加，点「更新索引」开始抓取'}
+
+
+def index_remove_source(source_id):
+    try:
+        sid = int(source_id or 0)
+    except Exception:
+        sid = 0
+    if not sid:
+        return {'ok': False, 'msg': '缺少源编号'}
+    con = _index_conn()
+    con.execute('DELETE FROM items WHERE source_id=?', (sid,))
+    con.execute('DELETE FROM pages WHERE source_id=?', (sid,))
+    con.execute('DELETE FROM sources WHERE id=?', (sid,))
+    con.commit()
+    con.close()
+    return {'ok': True}
+
+
+def _index_robots(base):
+    """一次抓取只读一次 robots.txt；读不到就按允许但限速处理。"""
+    try:
+        data, ctype, final, headers = _fetch_remote(
+            base.rstrip('/') + '/robots.txt', timeout=8, limit=512 * 1024,
+            headers={'Accept': 'text/plain,*/*'})
+        rp = urllib.robotparser.RobotFileParser()
+        rp.parse(data.decode('utf-8', 'replace').splitlines())
+        return rp
+    except Exception:
+        return None
+
+
+def _index_crawl_source(con, source, run_id, source_index, total_sources):
+    sid = int(source['id'])
+    seed = source['url']
+    base = '%s://%s' % (urlparse(seed).scheme.lower(), urlparse(seed).netloc.lower())
+    host = (urlparse(seed).hostname or '').lower()
+    rp = _index_robots(base)
+    pages = items = 0
+    warnings = []
+    seen_pages, seen_media = set(), set()
+    queue = [(seed, 0)]
+    title = ''
+
+    def add_item(mu, name, kind, page_url, page_title, thumb=''):
+        nonlocal items
+        mu = (mu or '').split('#')[0]
+        if not mu or mu in seen_media:
+            return
+        k = kind or _kind_from_url(mu)
+        if k not in DISCOVER_KIND.values():
+            return
+        try:
+            mu = _safe_remote_url(mu)
+        except Exception:
+            return
+        seen_media.add(mu)
+        nm = (name or '').strip() or _basename_from_url(mu, k)
+        nm = re.sub(r'[\\/:*?"<>|\r\n\t]', '_', nm)[:110]
+        desc = (page_title or '')[:180]
+        search_text = ('%s %s %s %s %s' % (nm, desc, page_url, mu, k)).lower()
+        con.execute(
+            'INSERT OR REPLACE INTO items(source_id,page_url,url,name,kind,license,author,thumb,desc,'
+            'search_text,found_at,run_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+            (sid, page_url, mu, nm, k, '未标注（需确认授权）', '', thumb,
+             desc, search_text, int(time.time()), run_id))
+        items += 1
+
+    # 直接贴媒体直链：只收这一条，不再抓页面
+    direct = _kind_from_url(seed)
+    if direct:
+        add_item(seed, _basename_from_url(seed, direct), direct, seed, '', seed if direct == '图片' else '')
+        con.execute('INSERT OR REPLACE INTO pages(source_id,url,title,fetched_at,run_id) '
+                    'VALUES(?,?,?,?,?)', (sid, seed, '', int(time.time()), run_id))
+        pages = 1
+    else:
+        while queue and pages < INDEX_MAX_PAGES and items < INDEX_MAX_ITEMS:
+            page_url, depth = queue.pop(0)
+            pkey = page_url.split('#')[0]
+            if pkey in seen_pages:
+                continue
+            seen_pages.add(pkey)
+            if rp is not None and not rp.can_fetch(DISCOVER_UA, page_url):
+                warnings.append('robots 禁止：' + page_url[:90])
+                continue
+            try:
+                data, ctype, final, headers = _fetch_remote(
+                    page_url, timeout=16, limit=DISCOVER_MAX_HTML,
+                    headers={'Accept': 'text/html,*/*'})
+                if ctype and not (ctype.startswith('text/html') or ctype.startswith('application/xhtml')):
+                    k = _kind_from_url(final)
+                    if k:
+                        add_item(final, _basename_from_url(final, k), k, final, '',
+                                 final if k == '图片' else '')
+                        pages += 1
+                    break
+                parser = _SiteHTML(final)
+                parser.feed(data.decode('utf-8', 'replace'))
+                pages += 1
+                page_title = parser.title or (urlparse(final).hostname or '')
+                if not title:
+                    title = page_title
+                con.execute('INSERT OR REPLACE INTO pages(source_id,url,title,fetched_at,run_id) '
+                            'VALUES(?,?,?,?,?)',
+                            (sid, final, page_title[:200], int(time.time()), run_id))
+                media = list(parser.media)
+                for link in parser.links:
+                    lk = link.split('#')[0]
+                    lk_kind = _kind_from_url(lk)
+                    if lk_kind:
+                        media.append({'url': lk, 'name': '', 'kind': lk_kind})
+                for m in media:
+                    mu = (m.get('url') or '').split('#')[0]
+                    mk = m.get('kind') or _kind_from_url(mu)
+                    add_item(mu, (m.get('name') or '').strip(), mk, final, page_title,
+                             mu if mk == '图片' else '')
+                    if items >= INDEX_MAX_ITEMS:
+                        break
+                if depth < 2 and pages < INDEX_MAX_PAGES:
+                    for link in parser.links:
+                        lk = link.split('#')[0]
+                        if not lk.startswith(('http://', 'https://')):
+                            continue
+                        lp = urlparse(lk)
+                        if lp.hostname != host or _kind_from_url(lk):
+                            continue
+                        ext = os.path.splitext(lp.path)[1].lower()
+                        if ext and ext not in ('.html', '.htm', '.shtml', '.php', '.asp', '.aspx'):
+                            continue
+                        if lk not in seen_pages and len(queue) < INDEX_MAX_PAGES * 4:
+                            queue.append((lk, depth + 1))
+                _index_job(pages=pages, items=items,
+                           msg='正在抓取 %s（%d 页 / %d 条）' % (host, pages, items))
+                if queue:
+                    time.sleep(0.35)
+            except Exception as e:
+                warnings.append('%s：%s' % (page_url[:80], str(e)[:100]))
+                continue
+
+    con.execute('DELETE FROM items WHERE source_id=? AND run_id<>?', (sid, run_id))
+    con.execute('DELETE FROM pages WHERE source_id=? AND run_id<>?', (sid, run_id))
+    con.commit()
+    pcount = con.execute('SELECT COUNT(*) FROM pages WHERE source_id=?', (sid,)).fetchone()[0]
+    icount = con.execute('SELECT COUNT(*) FROM items WHERE source_id=?', (sid,)).fetchone()[0]
+    status = 'ok' if (pages or items) else 'empty'
+    note = ('已抓 %d 页，索引 %d 条' % (pages, items)) if pages or items else '没有抓到公开媒体资源'
+    if warnings:
+        note += '；' + warnings[0]
+    con.execute('UPDATE sources SET last_crawl=?,last_status=?,last_error=?,page_count=?,item_count=? '
+                'WHERE id=?', (int(time.time()), status, note[:300], pcount, icount, sid))
+    con.commit()
+    return {'pages': pages, 'items': items, 'title': title, 'note': note, 'warnings': warnings[:5]}
+
+
+def _index_crawl_worker(source_id=0):
+    con = None
+    try:
+        con = _index_conn()
+        if source_id:
+            rows = con.execute('SELECT * FROM sources WHERE id=?', (int(source_id),)).fetchall()
+        else:
+            rows = con.execute('SELECT * FROM sources WHERE enabled=1 ORDER BY id').fetchall()
+        if not rows:
+            _index_job(running=False, phase='ready', progress=100, msg='还没有索引源，先添加站点',
+                       error='', source='')
+            return
+        total = len(rows)
+        for i, src in enumerate(rows):
+            sid = int(src['id'])
+            name = src['name'] or src['url']
+            _index_job(source=name, pages=0, items=0,
+                       msg='正在抓取 %s（%d/%d）' % (name, i + 1, total),
+                       progress=min(94, 4 + int(90 * i / total)))
+            con.execute('UPDATE sources SET last_status=?,last_error=? WHERE id=?',
+                        ('抓取中', '', sid))
+            con.commit()
+            run_id = int(time.time() * 1000)
+            try:
+                r = _index_crawl_source(con, src, run_id, i, total)
+                _index_job(pages=r['pages'], items=r['items'],
+                           msg='%s：%s' % (name, r['note']),
+                           progress=min(96, 4 + int(90 * (i + 1) / total)))
+            except Exception as e:
+                con.rollback()
+                con.execute('UPDATE sources SET last_status=?,last_error=? WHERE id=?',
+                            ('error', str(e)[:240], sid))
+                con.commit()
+                _index_job(error=str(e)[:240])
+        _index_job(running=False, phase='ready', progress=100,
+                   msg='索引更新完成', source='')
+    except Exception as e:
+        _index_job(running=False, phase='error', progress=100,
+                   msg='索引更新失败：%s' % str(e)[:200], error=str(e)[:240])
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+
+
+def start_index_crawl(source_id=0):
+    with INDEX_LOCK:
+        if INDEX_JOB.get('running'):
+            return False, '正在更新索引，请等这次结束'
+        INDEX_JOB.update(running=True, phase='crawl', msg='准备抓取…', progress=2,
+                         source='', pages=0, items=0, error='', started=time.time())
+    t = threading.Thread(target=_index_crawl_worker, args=(source_id,), daemon=True)
+    t.start()
+    return True, '已开始更新索引'
+
+
+def index_search(q, kinds='', sources='', limit=120):
+    q = (q or '').strip()[:80]
+    kind_names = set()
+    for k in (kinds or '').split(','):
+        k = k.strip()
+        if k in DISCOVER_KIND:
+            kind_names.add(DISCOVER_KIND[k])
+        elif k in DISCOVER_KIND.values():
+            kind_names.add(k)
+    if not kind_names:
+        kind_names = set(DISCOVER_KIND.values())
+    try:
+        limit = max(1, min(300, int(limit or 120)))
+    except Exception:
+        limit = 120
+    where = ["i.kind IN (%s)" % ','.join('?' for _ in kind_names)]
+    args = list(kind_names)
+    for token in (q.split() if q else []):
+        where.append('i.search_text LIKE ?')
+        args.append('%' + token.lower() + '%')
+    ids = []
+    for s in (sources or '').split(','):
+        if s.strip().isdigit():
+            ids.append(int(s.strip()))
+    if ids:
+        where.append('i.source_id IN (%s)' % ','.join('?' for _ in ids))
+        args.extend(ids)
+    con = _index_conn()
+    sql = ('SELECT i.id,i.source_id,i.page_url,i.url,i.name,i.kind,i.license,i.author,i.thumb,i.desc,'
+           'i.found_at,s.name AS source_name FROM items i JOIN sources s ON s.id=i.source_id '
+           'WHERE ' + ' AND '.join(where) + ' ORDER BY i.found_at DESC LIMIT ?')
+    args.append(limit)
+    try:
+        rows = con.execute(sql, args).fetchall()
+    except Exception as e:
+        con.close()
+        return {'ok': False, 'msg': '索引查询失败：' + str(e)[:160], 'items': [], 'status': []}
+    con.close()
+    items = []
+    for r in rows:
+        items.append(_card(url=r['url'], name=r['name'], kind=r['kind'],
+                           source=r['source_name'] or '自建索引', license=r['license'] or '未标注',
+                           author=r['author'] or '', page=r['page_url'] or '',
+                           thumb=r['thumb'] or (r['url'] if r['kind'] == '图片' else ''),
+                           desc=r['desc'] or ''))
+    return {'ok': True, 'items': items, 'status': [], 'q': q, 'total': len(items),
+            'note': '来自你添加的站点索引；点卡片可预览，下载仍走隔离区校验。'}
+
+
 # ---------- 受控下载：隔离区 + 魔数校验 + Defender ----------
 
 def _discover_name(name, ctype, url, kind):
@@ -3795,6 +4165,20 @@ class Handler(BaseHTTPRequestHandler):
         if p == '/api/discover/ingest':
             self.api_discover_ingest(); return
 
+        if p == '/api/index/sources':
+            self._json(index_sources()); return
+        if p == '/api/index/search':
+            self._json(index_search((q.get('q') or [''])[0], (q.get('kinds') or [''])[0],
+                                    (q.get('sources') or [''])[0], (q.get('limit') or ['120'])[0])); return
+        if p == '/api/index/status':
+            self._json({'ok': True, 'job': index_status()}); return
+        if p == '/api/index/source/add':
+            self.api_index_add(); return
+        if p == '/api/index/source/remove':
+            self.api_index_remove(); return
+        if p == '/api/index/crawl':
+            self.api_index_crawl(); return
+
         self._send(404, 'not found', 'text/plain; charset=utf-8')
 
     def do_HEAD(self):
@@ -3899,6 +4283,21 @@ class Handler(BaseHTTPRequestHandler):
             self._json(r)
         except Exception as e:
             self._json({'ok': False, 'msg': '搜索失败：' + str(e)[:180], 'items': [], 'status': []}, 500)
+
+    def api_index_add(self):
+        d = self._json_body or {}
+        r = index_add_source(d.get('url') or '', d.get('name') or '')
+        self._json(r, 200 if r.get('ok') else 400)
+
+    def api_index_remove(self):
+        d = self._json_body or {}
+        r = index_remove_source(d.get('id') or 0)
+        self._json(r, 200 if r.get('ok') else 400)
+
+    def api_index_crawl(self):
+        d = self._json_body or {}
+        ok, msg = start_index_crawl(d.get('id') or 0)
+        self._json({'ok': ok, 'msg': msg, 'job': index_status()}, 200 if ok else 409)
 
     def api_discover_site(self):
         d = self._json_body or {}

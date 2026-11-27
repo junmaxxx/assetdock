@@ -45,10 +45,19 @@
 
   .search{position:relative;display:flex;align-items:center}
   .search svg{position:absolute;left:12px;width:14px;height:14px;opacity:.5;pointer-events:none}
-  #q{width:300px;background:rgba(20,24,33,.85);border:1px solid var(--line);color:var(--txt);
-    padding:8px 12px 8px 32px;border-radius:11px;font-size:13px;outline:none;transition:.15s}
+  #q{width:370px;background:rgba(20,24,33,.85);border:1px solid var(--line);color:var(--txt);
+    padding:8px 138px 8px 32px;border-radius:11px;font-size:13px;outline:none;transition:.15s}
   #q::placeholder{color:#5b6376}
   #q:focus{border-color:rgba(139,108,255,.75);box-shadow:0 0 0 3px rgba(139,108,255,.14);background:rgba(24,29,40,.95)}
+  .qmode{position:absolute;right:3px;top:3px;bottom:3px;display:flex;gap:2px;padding:2px;
+    border-radius:8px;background:rgba(11,14,20,.92);box-shadow:inset 0 0 0 1px rgba(60,70,92,.5)}
+  .qm{border:0;background:transparent;color:#7f879a;font-size:10.5px;line-height:1;padding:0 6px;
+    border-radius:6px;cursor:pointer;transition:.15s}
+  .qm:hover{color:#dfe5f2;background:rgba(255,255,255,.06)}
+  .qm.on{color:#fff;background:rgba(139,108,255,.28)}
+  .qm.on.web{background:rgba(75,209,196,.26)}
+  .search.web #q:focus{border-color:rgba(75,209,196,.78);box-shadow:0 0 0 3px rgba(75,209,196,.13)}
+  .search.web svg{stroke:#4bd1c4;opacity:.72}
   .sel{background:rgba(20,24,33,.85);border:1px solid var(--line);color:var(--txt);padding:8px 10px;
     border-radius:11px;font-size:12.5px;outline:none;cursor:pointer}
   .sel:hover{border-color:var(--line2)}
@@ -376,9 +385,13 @@
     </div>
     <span class="stats" id="stats">正在读取索引…</span>
     <button class="ghost" id="back" style="display:none">← 回相册</button>
-    <div class="search">
+    <div class="search" id="searchbox">
       <svg viewBox="0 0 24 24" fill="none" stroke="#8b93a8" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20.5 20.5l-4-4"/></svg>
       <input id="q" placeholder="搜文件名、路径或内容，例如 气球 / 充值 / 角色名">
+      <div class="qmode" id="qmode">
+        <button class="qm on" type="button" data-qm="local" title="本地搜索">本地搜索</button>
+        <button class="qm" type="button" data-qm="web" title="全网搜索">全网搜索</button>
+      </div>
     </div>
     <select id="sortsel" class="sel">
       <option value="time">按时间</option>
@@ -412,7 +425,7 @@
   <span>Ctrl+滚轮 缩放界面</span>
   <span>Ctrl+Alt+Space 唤起搜索</span>
   <span>后台每 15 分钟自动补扫，新素材自动出现</span>
-  <span style="margin-left:auto;color:#3f4657">素材坞 v1.7.0 · 本地运行</span>
+  <span style="margin-left:auto;color:#3f4657">素材坞 v1.7.1 · 本地运行</span>
 </footer>
 
 <div id="batchbar">
@@ -930,13 +943,50 @@ document.addEventListener('keydown', async e => {
   if (r.ok) { loadFacets(); if (S.view === 'grid') resetAndLoad(); else showAlbums(); }
 });
 let qt;
+let QMODE = 'local';
+const Q_PLACEHOLDER = {
+  local: '搜文件名、路径或内容，例如 气球 / 充值 / 角色名',
+  web: '搜公开资源，例如 小猫 / 蛋糕 / 论文'
+};
+function setQMode(mode){
+  QMODE = mode === 'web' ? 'web' : 'local';
+  const box = document.getElementById('searchbox');
+  const q = document.getElementById('q');
+  box.classList.toggle('web', QMODE === 'web');
+  q.placeholder = Q_PLACEHOLDER[QMODE];
+  document.querySelectorAll('.qm').forEach(b => {
+    const on = b.dataset.qm === QMODE;
+    b.classList.toggle('on', on);
+    b.classList.toggle('web', on && QMODE === 'web');
+  });
+}
+function runLocalSearch(v){
+  S.q = v;
+  S.ext = ''; S.recent = ''; S.sub = '';
+  if (S.view === 'albums') { S.type = '全部'; S.cat = '全部'; S.title = '搜索结果'; showGrid(); refreshChips(); }
+  resetAndLoad();
+}
 document.getElementById('q').addEventListener('input', e => {
-  clearTimeout(qt); qt = setTimeout(() => {
-    S.q = e.target.value; S.ext=''; S.recent=''; S.sub='';
-    if (S.view === 'albums') { S.type='全部'; S.cat='全部'; S.title = '搜索结果'; showGrid(); refreshChips(); }
-    resetAndLoad();
-  }, 320);
+  if (QMODE === 'web') return;
+  clearTimeout(qt); qt = setTimeout(() => runLocalSearch(e.target.value), 320);
 });
+document.getElementById('q').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const v = e.target.value.trim();
+  if (!v) return;
+  clearTimeout(qt);
+  if (QMODE === 'web') openDiscover(v);
+  else runLocalSearch(v);
+});
+document.querySelectorAll('.qm').forEach(b => b.onclick = () => {
+  const mode = b.dataset.qm;
+  setQMode(mode);
+  const v = document.getElementById('q').value.trim();
+  if (!v) { document.getElementById('q').focus(); return; }
+  if (mode === 'web') openDiscover(v);
+  else { clearTimeout(qt); runLocalSearch(v); }
+});
+setQMode('local');
 
 function resetAndLoad(){
   S.offset = 0; S.end = false; S.seq++; S.lastMonth = ''; S.items = [];
@@ -1843,10 +1893,25 @@ function discSetMode(mode){
   document.getElementById('dsmsg').textContent = mode === 'search'
     ? '输入关键词开始搜索。' : '输入站点地址，抓取公开页面里的媒体直链。';
 }
-function openDiscover(){
-  if (!DISC.srcLoaded) loadDiscSources();
+async function openDiscover(query){
+  if (!DISC.srcLoaded) await loadDiscSources();
+  if (query) {
+    discSetMode('search');
+    DISC.kind = 'all';
+    document.querySelectorAll('#dskindrow .dchip').forEach(x => x.classList.toggle('on', x.dataset.kind === 'all'));
+    if (!DISC.sources.size) {
+      document.querySelectorAll('#dssourcerow [data-source]').forEach(b => {
+        DISC.sources.add(b.dataset.source); b.classList.add('on');
+      });
+    }
+  }
   openPanel('discoverpanel');
-  setTimeout(() => document.getElementById('dsq').focus(), 80);
+  if (query) {
+    document.getElementById('dsq').value = query;
+    discSearch();
+  } else {
+    setTimeout(() => document.getElementById('dsq').focus(), 80);
+  }
 }
 function discCard(it, i){
   const thumb = it.thumb || (it.kind === '图片' ? it.url : '');

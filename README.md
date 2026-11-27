@@ -8,7 +8,7 @@
 
 ## 下载（Windows 免安装）
 
-到 [Releases · v1.7.0](../../releases/tag/v1.7.0) 下载 `assetdock-win64-v1.7.0.zip`，解压到一个固定目录，双击 `素材坞.exe` 即可。不需要装 Python，首次启动会先扫盘并显示进度。
+到 [Releases · v1.7.1](../../releases/tag/v1.7.1) 下载 `assetdock-win64-v1.7.1.zip`，解压到一个固定目录，双击 `素材坞.exe` 即可。不需要装 Python，首次启动会先扫盘并显示进度。
 
 ## 功能
 

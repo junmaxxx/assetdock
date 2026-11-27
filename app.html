@@ -267,6 +267,19 @@
   .card:hover .thumb .star{display:flex}
   .card .tg{display:flex;gap:4px;flex-wrap:wrap;margin-top:5px}
   .card .tg i{font-style:normal;font-size:10px;color:#b9a999;background:rgba(255,158,92,.1);border:1px solid rgba(255,158,92,.22);border-radius:5px;padding:1px 5px}
+  .card .tg i.ai{color:#9fd8cf;background:rgba(75,209,196,.08);border-color:rgba(75,209,196,.24)}
+  .card .snip{font-size:10.5px;color:#8f9bb0;line-height:1.5;margin-top:5px;max-height:3em;overflow:hidden}
+  .card .fb{display:flex;gap:5px;margin-top:6px}
+  .card .fb button{flex:1;border:1px solid rgba(90,100,124,.45);background:rgba(22,27,38,.75);color:#8b93a7;
+    border-radius:6px;padding:4px 0;font-size:10px;cursor:pointer}
+  .card .fb button:hover{color:#e8ecf4;border-color:rgba(139,125,255,.65)}
+  .card .fb button.up{border-color:rgba(75,209,196,.36);color:#8fd8cc}
+  .card .fb button.down{border-color:rgba(233,96,140,.3);color:#d89aac}
+  .simbanner{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 14px;
+    padding:10px 13px;border:1px solid rgba(139,125,255,.36);border-radius:10px;background:rgba(139,108,255,.08);
+    color:#d8d2f2;font-size:12px}
+  .simbanner button{border:1px solid rgba(139,125,255,.5);background:transparent;color:#c9c0ff;
+    border-radius:7px;padding:4px 10px;font-size:11px;cursor:pointer}
   #batchbar #bops{color:#e7dccf}
 
   .panel{position:fixed;inset:0;z-index:110;display:none;align-items:center;justify-content:center;
@@ -400,9 +413,10 @@
       <input id="q" placeholder="搜文件名、路径或内容，例如 气球 / 充值 / 角色名">
       <div class="qmode" id="qmode">
         <button class="qm on" type="button" data-qm="local" title="本地搜索">本地搜索</button>
-        <button class="qm" type="button" data-qm="web" title="自建索引搜索">索引搜索</button>
+        <button class="qm" type="button" id="simbtn" title="上传一张图，找本地相似素材">图搜图</button>
       </div>
     </div>
+    <input type="file" id="simfile" accept="image/*" style="display:none">
     <select id="sortsel" class="sel">
       <option value="time">按时间</option>
       <option value="name">按名称</option>
@@ -435,7 +449,7 @@
   <span>Ctrl+滚轮 缩放界面</span>
   <span>Ctrl+Alt+Space 唤起搜索</span>
   <span>后台每 15 分钟自动补扫，新素材自动出现</span>
-  <span style="margin-left:auto;color:#3f4657">素材坞 v1.8.0 · 本地运行</span>
+  <span style="margin-left:auto;color:#3f4657">素材坞 v2.0 · 本地内容索引</span>
 </footer>
 
 <div id="batchbar">
@@ -508,7 +522,6 @@
   <div class="pbox narrow">
     <div class="phead"><b>工具与维护</b><button class="pclose" data-close="toolpanel">✕</button></div>
     <div class="toolgrid">
-      <button class="tool" id="open-discover"><span class="ti">◎</span><span><b>资源搜索</b><em>自建索引 + 公开源 + 隔离下载</em></span></button>
       <button class="tool" id="open-trash"><span class="ti">🗑</span><span><b>待删除箱</b><em id="trashcnt">0 项 · 可还原</em></span></button>
       <button class="tool" id="open-dupe"><span class="ti">⧉</span><span><b>重复与相似</b><em>清理占空间的重复图</em></span></button>
       <button class="tool" id="open-content"><span class="ti">⌕</span><span><b>内容索引</b><em>OCR 截图、PDF 正文</em></span></button>
@@ -743,6 +756,7 @@ const S = {view:'albums', type:'全部', cat:'全部', loc:'全部', disk:'', su
            lastMonth:'', title:'全部素材', items:[]};
 let ALB = [];
 let SUBS = [];
+let SIM_ITEMS = null;
 let FACETS = {tags:[], fav:0, trash:0, meta:{}};
 const grid = document.getElementById('grid');
 const more = document.getElementById('more');
@@ -752,11 +766,14 @@ const num = n => n.toLocaleString();
 function toast(m){ const t=document.getElementById('toast'); t.textContent=m; t.classList.add('on'); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('on'),1600); }
 
 async function loadFacets(){
-  const r = await fetch('/api/facets?type=' + encodeURIComponent(S.type)).then(r=>r.json());
+  const fp = new URLSearchParams();
+  ['type','cat','loc','disk','sub','tag','fav','q','orient','minw','minh','alpha','durmin','durmax','recent','ext']
+    .forEach(k => { if (S[k]) fp.set(k, S[k]); });
+  const r = await fetch('/api/facets?' + fp.toString()).then(r=>r.json());
   FACETS = r;
   const m = r.media || {};
   document.getElementById('stats').innerHTML =
-    '<span class="pill">全部<b>'+num(r.total)+'</b></span>' +
+    '<span class="pill">当前<b>'+num(r.total)+'</b></span>' +
     '<span class="pill">图片<b>'+num(m['图片']||0)+'</b></span>' +
     '<span class="pill">视频<b>'+num(m['视频']||0)+'</b></span>' +
     '<span class="pill">音频<b>'+num(m['音频']||0)+'</b></span>' +
@@ -766,7 +783,7 @@ async function loadFacets(){
     '<button class="chip'+(S.type===t?' on':'')+'" data-k="t" data-v="'+t+'">'+t+(m[t]?'<i>'+num(m[t])+'</i>':'')+'</button>').join('');
   h += '<span class="lab" style="margin-left:10px">分类</span>' +
     '<button class="chip'+(S.cat==='全部'?' on':'')+'" data-k="c" data-v="全部">全部</button>' +
-    r.cats.map(c => '<button class="chip'+(S.cat===c.k?' on':'')+'" data-k="c" data-v="'+esc(c.k)+'">'+esc(c.k)+'<i>'+num(c.n)+'</i></button>').join('');
+    r.cats.filter(c => c.n > 0 || c.k === S.cat).map(c => '<button class="chip'+(S.cat===c.k?' on':'')+'" data-k="c" data-v="'+esc(c.k)+'">'+esc(c.k)+'<i>'+num(c.n)+'</i></button>').join('');
   document.getElementById('chips').innerHTML = h;
   SUBS = r.subs || [];
   S.disks = r.disks || [];
@@ -782,7 +799,7 @@ async function loadFacets(){
 /* 标签、收藏与常用属性筛选 */
 function renderTagChips(){
   const box = document.getElementById('tagchips');
-  const tags = (FACETS.tags || []).slice(0, 28);
+  const tags = (FACETS.tags || []).filter(t => t.n > 0 || t.name === S.tag).slice(0, 28);
   let h = '<span class="lab">标签</span>' +
     '<button class="chip fav'+(S.fav?' on':'')+'" data-tagfav="1">★ 收藏<i>'+num(FACETS.fav||0)+'</i></button>';
   h += tags.map(t => '<button class="chip t'+(S.tag===t.name?' on':'')+'" data-tag="'+esc(t.name)+'">#'+esc(t.name)+'<i>'+num(t.n)+'</i></button>').join('');
@@ -828,7 +845,8 @@ function renderDiskChips(){
 /* 细分一层：当前分类下的部件/用途（特效、界面、茶叶、录屏…） */
 function renderSubchips(){
   const box = document.getElementById('subchips');
-  const list = (S.cat === '全部' ? SUBS : SUBS.filter(s => s.cat === S.cat)).slice(0, 22);
+  const list = (S.cat === '全部' ? SUBS : SUBS.filter(s => s.cat === S.cat))
+    .filter(s => s.n > 0 || s.k === S.sub).slice(0, 22);
   if (!list.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
   box.style.display = '';
   box.innerHTML = '<span class="lab">细分</span>' +
@@ -998,6 +1016,7 @@ function setQMode(mode){
   });
 }
 function runLocalSearch(v){
+  SIM_ITEMS = null;
   S.q = v;
   S.ext = ''; S.recent = ''; S.sub = '';
   if (S.view === 'albums') { S.type = '全部'; S.cat = '全部'; S.title = '搜索结果'; showGrid(); refreshChips(); }
@@ -1024,6 +1043,61 @@ document.querySelectorAll('.qm').forEach(b => b.onclick = () => {
   else { clearTimeout(qt); runLocalSearch(v); }
 });
 setQMode('local');
+
+/* 图搜图：上传一张本地图片，后端 dHash 比对，不联网 */
+document.getElementById('simbtn').onclick = () => document.getElementById('simfile').click();
+document.getElementById('simfile').onchange = e => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (f) runSimilarImage(f);
+};
+function clearSimilar(){
+  SIM_ITEMS = null;
+  S.q = ''; document.getElementById('q').value = '';
+  S.type = '全部'; S.cat = '全部'; S.title = '全部素材';
+  if (S.view === 'albums') { showGrid(); refreshChips(); }
+  resetAndLoad();
+}
+async function runSimilarImage(file){
+  if (!file.type.startsWith('image/')) { toast('请选一张图片'); return; }
+  toast('正在比对本地相似图…');
+  const dataUrl = await new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = reject;
+    fr.readAsDataURL(file);
+  });
+  try {
+    const r = await fetch('/api/similar', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({image:dataUrl})}).then(x => x.json());
+    if (!r.ok) { toast(r.msg || '比对失败'); return; }
+    SIM_ITEMS = r.items || [];
+    S.items = SIM_ITEMS; S.total = SIM_ITEMS.length; S.offset = SIM_ITEMS.length; S.end = true;
+    S.q = ''; document.getElementById('q').value = '';
+    if (S.view === 'albums') { S.type = '全部'; S.cat = '全部'; showGrid(); refreshChips(); }
+    document.getElementById('gtitle').textContent = '以图搜图';
+    document.getElementById('stats').textContent = '相似素材 ' + SIM_ITEMS.length + ' 个';
+    grid.innerHTML = '<div class="simbanner"><span>以图搜图 · 找到 ' + SIM_ITEMS.length +
+      ' 张相似素材，按相似度排序</span><button onclick="clearSimilar()">清空</button></div>' +
+      (SIM_ITEMS.length ? '<div class="msec"><div class="grid">' + SIM_ITEMS.map(card).join('') + '</div></div>'
+                        : '<div class="empty"><h2>没有找到相似图</h2><p>这张图在本地库中还没有足够接近的版本。可以换一张，或先去“工具”里补建图片指纹。</p></div>');
+    more.textContent = '';
+  } catch(e) { toast('图搜图失败：' + e.message); }
+}
+
+/* 搜索结果反馈：有用就把搜索词学成标签 */
+document.addEventListener('click', async e => {
+  const b = e.target.closest('[data-fb]');
+  if (!b) return;
+  e.preventDefault(); e.stopPropagation();
+  const id = +b.dataset.id, verdict = b.dataset.fb;
+  const r = await fetch('/api/feedback', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({id, q: S.q || '', verdict})}).then(x => x.json()).catch(() => ({ok:false}));
+  if (r.ok) {
+    toast(r.learned ? '已记下：下次搜“' + S.q + '”会更容易找到它' : '已记下这条反馈');
+    loadFacets().then(renderTagChips);
+  } else toast(r.msg || '反馈没存上');
+});
 
 function resetAndLoad(){
   S.offset = 0; S.end = false; S.seq++; S.lastMonth = ''; S.items = [];
@@ -1055,9 +1129,13 @@ function dayOf(ms){
 
 function card(d){
   const tg = (d.tags && d.tags.length) ? '<div class="tg">'+d.tags.slice(0,3).map(t=>'<i>#'+esc(t)+'</i>').join('')+'</div>' : '';
+  const ai = (d.auto_tags && d.auto_tags.length) ? '<div class="tg">'+d.auto_tags.slice(0,3).map(t=>'<i class="ai">'+esc(t)+'</i>').join('')+'</div>' : '';
+  const snip = (S.q && d.snip) ? '<div class="snip">命中：'+esc(d.snip)+'</div>' : '';
+  const fb = (S.q || SIM_ITEMS) ? '<div class="fb"><button class="up" data-fb="up" data-id="'+d.id+'">有用</button><button class="down" data-fb="down" data-id="'+d.id+'">没用</button></div>' : '';
+  const sim = (typeof d.dist === 'number') ? ' · 相似度 '+Math.max(0, 100 - d.dist * 4)+'%' : '';
   return '<div class="card" data-id="'+d.id+'">'+tile(d)+
     '<div class="info"><div class="nm" title="'+esc(d.path)+'">'+esc(d.name)+'</div>'+
-    '<div class="sub">'+esc(d.cat)+(d.sub? ' · <b style="color:#7fd6cb;font-weight:500">'+esc(d.sub)+'</b>':'')+' · '+dayOf(d.mtime)+' · '+kb(d.size)+'<br><em>'+esc(d.loc)+'</em></div>'+tg+'</div></div>';
+    '<div class="sub">'+esc(d.cat)+(d.sub? ' · <b style="color:#7fd6cb;font-weight:500">'+esc(d.sub)+'</b>':'')+' · '+dayOf(d.mtime)+' · '+kb(d.size)+sim+'<br><em>'+esc(d.loc)+'</em></div>'+tg+ai+snip+fb+'</div></div>';
 }
 
 async function loadMore(){
@@ -1080,7 +1158,16 @@ async function loadMore(){
         if (pending && (S.orient || S.alpha || S.durmax)) {
           grid.innerHTML = '<div class="empty"><h2>正在补建属性索引</h2><p>尺寸、透明底和视频时长还在后台读取，约一两分钟后这个筛选就有结果。</p></div>';
         } else {
-          grid.innerHTML = '<div class="empty"><h2>这里还没有素材</h2><p>换个分类、关键词，或回到相册换个封面。</p></div>';
+          const parts = [];
+          if (S.type && S.type !== '全部') parts.push(S.type);
+          if (S.cat && S.cat !== '全部') parts.push(S.cat);
+          if (S.sub) parts.push(S.sub);
+          if (S.tag) parts.push('#' + S.tag);
+          if (S.disk) parts.push(S.disk + '盘');
+          if (S.q) parts.push('“' + S.q + '”');
+          const combo = parts.length ? parts.join(' × ') : '当前筛选';
+          grid.innerHTML = '<div class="empty"><h2>当前组合没有结果</h2><p>' + esc(combo) +
+            ' 没有匹配项。去掉一个条件，或清空筛选再试。</p><p><button class="ghost" onclick="document.getElementById(\'reset\').click()">清空筛选</button></p></div>';
         }
       }
       more.textContent = '';
@@ -1677,7 +1764,8 @@ document.getElementById('open-wm').onclick = () => {
   if (!id) { toast('先在网格里选中一张图片'); return; }
   openWatermark(id);
 };
-document.getElementById('open-discover').onclick = () => openDiscover();
+const odBtn = document.getElementById('open-discover');
+if (odBtn) odBtn.onclick = () => openDiscover();
 
 function patchItem(id, fn){
   const it = itemOf(id);

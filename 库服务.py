@@ -75,7 +75,7 @@ INDEX_JOB = {'running': False, 'phase': 'idle', 'msg': '', 'progress': 0, 'sourc
              'pages': 0, 'items': 0, 'error': '', 'started': 0}
 INDEX_LOCK = threading.Lock()
 DISCOVER_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-               '(KHTML, like Gecko) Chrome/124.0 Safari/537.36 AssetDock/1.8.0')
+               '(KHTML, like Gecko) Chrome/124.0 Safari/537.36 AssetDock/2.0.0')
 DISCOVER_MAX_DL = 200 * 1024 * 1024
 DISCOVER_MAX_HTML = 6 * 1024 * 1024
 DISCOVER_MAX_THUMB = 14 * 1024 * 1024
@@ -206,11 +206,18 @@ def media_of(ext):
     return None
 
 
+DOC_ONLY_HINTS = ('\\documents\\', '\\wpsdrive\\')
+
+
 def guess_cat(path, media):
     low = path.lower()
     for cat, hints in CAT_RULES:
         for h in hints:
             if h in low:
+                # Documents/WPSDrive 是“文档目录”，不能把里面的视频、图片也归成证照文档。
+                # 资质/证书/合同这些关键词仍然允许图片扫描件命中。
+                if h in DOC_ONLY_HINTS and media != '文档':
+                    continue
                 return cat
     if media == '视频':
         return '视频'
@@ -375,6 +382,8 @@ def connect():
             'hash_mtime': 'INTEGER DEFAULT 0',
             'content_mtime': 'INTEGER DEFAULT 0',
             'meta_state': 'INTEGER DEFAULT 0',
+            'auto_tags': "TEXT DEFAULT ''",
+            'vision_state': 'INTEGER DEFAULT 0',
         }
         for name, ddl in extra.items():
             if name not in cols:
@@ -383,6 +392,9 @@ def connect():
         con.execute('CREATE INDEX IF NOT EXISTS idx_sha ON items(sha)')
         con.execute('CREATE INDEX IF NOT EXISTS idx_size ON items(size)')
         con.execute('CREATE INDEX IF NOT EXISTS idx_meta_state ON items(media, meta_state)')
+        con.execute('CREATE TABLE IF NOT EXISTS feedback ('
+                    'id INTEGER PRIMARY KEY AUTOINCREMENT, item_id INTEGER, q TEXT, verdict TEXT, ts INTEGER)')
+        con.execute('CREATE INDEX IF NOT EXISTS idx_feedback ON feedback(item_id, verdict)')
         con.commit()
         _MIGRATED = True
     return con
@@ -610,6 +622,10 @@ def do_scan(full=False):
     print('扫描完成：命中 %d 个媒体文件，新增 %d，更新 %d，用时 %.0f 秒' % (scanned, added, updated, time.time() - t0))
     try:
         start_meta_index()
+    except Exception:
+        pass
+    try:
+        start_content('auto')
     except Exception:
         pass
 
@@ -977,10 +993,10 @@ def _filter(p):
     if p.get('fav'):
         where.append('EXISTS (SELECT 1 FROM fav f WHERE f.item_id=items.id)')
     if p.get('q'):
-        where.append('(name LIKE ? OR path LIKE ? OR content LIKE ? OR content LIKE ?)')
+        where.append('(name LIKE ? OR path LIKE ? OR content LIKE ? OR content LIKE ? OR auto_tags LIKE ?)')
         q = p['q']
         q2 = re.sub(r'\s+', '', q)
-        args += ['%' + q + '%', '%' + q + '%', '%' + q + '%', '%' + q2 + '%']
+        args += ['%' + q + '%', '%' + q + '%', '%' + q + '%', '%' + q2 + '%', '%' + q + '%']
     if p.get('ext'):
         where.append('name LIKE ?'); args.append('%' + p['ext'])
     if p.get('orient'):
@@ -1643,6 +1659,90 @@ def _hamming(a, b):
     return (int(a, 16) ^ int(b, 16)).bit_count()
 
 
+def api_similar_image(handler):
+    """以图搜图：本地 dHash 比对，不联网、不上传。请求体 {image: dataURL/纯 base64}。"""
+    d = getattr(handler, '_json_body', {}) or {}
+    raw = (d.get('image') or '').strip()
+    if ',' in raw and raw.lower().startswith('data:'):
+        raw = raw.split(',', 1)[1]
+    if not raw:
+        handler._json({'ok': False, 'msg': '没有收到图片'}, 400)
+        return
+    tmp = ''
+    try:
+        data = base64.b64decode(raw, validate=False)
+        if len(data) > 24 * 1024 * 1024:
+            handler._json({'ok': False, 'msg': '图片太大，换一张 24MB 以内的'}, 400)
+            return
+        fd, tmp = tempfile.mkstemp(suffix='.jpg')
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+        ph, _alpha, _w, _h = dhash_file(tmp)
+    except Exception as e:
+        handler._json({'ok': False, 'msg': '这张图读不出来：' + str(e)[:80]}, 400)
+        return
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+    con = connect()
+    rows = con.execute('SELECT id,name,ext,media,size,mtime,loc,cat,w,h,path,sub,phash,auto_tags,'
+                       'substr(content,1,120),'
+                       '(SELECT 1 FROM fav f WHERE f.item_id=items.id),'
+                       '(SELECT group_concat(t.name,\'|\') FROM item_tags it JOIN tags t ON t.id=it.tag_id WHERE it.item_id=items.id)'
+                       ' FROM items WHERE phash<>"" AND media="图片"').fetchall()
+    con.close()
+    scored = []
+    for r in rows:
+        try:
+            dist = _hamming(ph, r[12])
+        except Exception:
+            continue
+        if dist <= 8:
+            scored.append((dist, r))
+    scored.sort(key=lambda x: x[0])
+    items = []
+    for dist, r in scored[:60]:
+        items.append({'id': r[0], 'name': r[1], 'ext': r[2], 'media': r[3], 'size': r[4],
+                      'mtime': r[5], 'loc': r[6], 'cat': r[7], 'w': r[8], 'h': r[9], 'path': r[10],
+                      'sub': r[11] or '', 'auto_tags': (r[13] or '').split(',') if r[13] else [],
+                      'snip': r[14] or '', 'fav': bool(r[15]),
+                      'tags': (r[16] or '').split('|') if r[16] else [], 'dist': dist})
+    handler._json({'ok': True, 'total': len(items), 'items': items, 'hash': ph})
+
+
+def api_feedback(handler):
+    """搜索反馈闭环：点“有用”就把这次搜索词记成这个素材的标签，下次更容易命中。"""
+    d = getattr(handler, '_json_body', {}) or {}
+    try:
+        item_id = int(d.get('id') or 0)
+    except Exception:
+        item_id = 0
+    q = (d.get('q') or '').strip()[:24]
+    verdict = (d.get('verdict') or '').strip()
+    if not item_id or verdict not in ('up', 'down'):
+        handler._json({'ok': False, 'msg': '参数不完整'}, 400)
+        return
+    con = connect()
+    if not con.execute('SELECT 1 FROM items WHERE id=?', (item_id,)).fetchone():
+        con.close()
+        handler._json({'ok': False, 'msg': '素材不存在'}, 404)
+        return
+    con.execute('INSERT INTO feedback(item_id,q,verdict,ts) VALUES(?,?,?,?)',
+                (item_id, q, verdict, int(time.time())))
+    if verdict == 'up' and q and len(q) <= 24:
+        con.execute('INSERT OR IGNORE INTO tags(name) VALUES(?)', (q,))
+        tag_id = con.execute('SELECT id FROM tags WHERE name=?', (q,)).fetchone()[0]
+        con.execute('INSERT OR IGNORE INTO item_tags(item_id,tag_id) VALUES(?,?)', (item_id, tag_id))
+    con.commit()
+    con.close()
+    bump_data()
+    handler._json({'ok': True, 'learned': bool(verdict == 'up' and q)})
+
+
+
 def start_dedupe():
     if DEDUPE_JOB.get('running'):
         return False
@@ -1987,6 +2087,160 @@ def pptx_text(path):
         return ''
 
 
+def docx_text(path):
+    """不依赖 python-docx，直接读 docx 里的 word/document.xml。"""
+    try:
+        import zipfile
+        import xml.etree.ElementTree as ET
+        with zipfile.ZipFile(path) as z:
+            xml = z.read('word/document.xml')
+        root = ET.fromstring(xml)
+        out = []
+        for node in root.iter():
+            if node.tag.endswith('}t') and node.text:
+                out.append(node.text)
+            elif node.tag.endswith('}tab'):
+                out.append('\t')
+            elif node.tag.endswith('}br'):
+                out.append('\n')
+        return _clean_text(' '.join(out))
+    except Exception:
+        return ''
+
+
+def plain_text(path):
+    for enc in ('utf-8', 'utf-8-sig', 'gb18030', 'utf-16'):
+        try:
+            with open(path, 'r', encoding=enc, errors='strict') as f:
+                return _clean_text(f.read()[:200000])
+        except Exception:
+            continue
+    return ''
+
+
+MODEL_DIR = os.path.join(TOOLS, '_model')
+if getattr(sys, 'frozen', False):
+    mei = getattr(sys, '_MEIPASS', '')
+    if mei:
+        MODEL_DIR = os.path.join(mei, '_model')
+VISION_MODEL = os.path.join(MODEL_DIR, 'mobilenetv2-7.onnx')
+VISION_LABELS = os.path.join(MODEL_DIR, 'imagenet_classes.txt')
+_VISION = {'tried': False, 'ok': False, 'msg': '', 'session': None, 'labels': []}
+
+# ImageNet 常见类别的中文标签。只收“看得见、搜得到”的词，避免把相近类别乱贴。
+_VISION_TAG_MAP = {
+    'joystick': '手柄', 'game controller': '手柄', 'computer mouse': '鼠标',
+    'mouse': '老鼠', 'keyboard': '键盘', 'laptop': '笔记本电脑', 'notebook': '笔记本电脑',
+    'desktop computer': '台式电脑', 'monitor': '显示器', 'screen': '屏幕',
+    'television': '电视', 'cellular telephone': '手机', 'cellular phone': '手机',
+    'remote control': '遥控器', 'headphone': '耳机', 'earphone': '耳机',
+    'microphone': '麦克风', 'speaker': '音箱', 'camera': '相机', 'reflex camera': '相机',
+    'lens': '镜头', 'printer': '打印机', 'router': '路由器', 'hard disc': '硬盘',
+    'computer': '电脑', 'hand-held computer': '掌机', 'ipod': '播放器',
+    'cd player': '播放器', 'radio': '收音机', 'projector': '投影仪',
+    'power drill': '电钻', 'hammer': '锤子', 'screwdriver': '螺丝刀',
+    'wrench': '扳手', 'vacuum': '吸尘器', 'fan': '风扇', 'air conditioner': '空调',
+    'refrigerator': '冰箱', 'microwave': '微波炉', 'toaster': '烤面包机',
+    'coffee maker': '咖啡机', 'blender': '搅拌机', 'kettle': '水壶',
+    'bottle': '瓶子', 'cup': '杯子', 'mug': '马克杯', 'plate': '盘子',
+    'bowl': '碗', 'fork': '叉子', 'knife': '刀', 'spoon': '勺子',
+    'chopsticks': '筷子', 'banana': '香蕉', 'orange': '橙子', 'lemon': '柠檬',
+    'strawberry': '草莓', 'apple': '苹果', 'pineapple': '菠萝',
+    'watermelon': '西瓜', 'grape': '葡萄', 'peach': '桃子', 'pear': '梨',
+    'pomegranate': '石榴', 'fig': '无花果', 'jackfruit': '菠萝蜜',
+    'dragon fruit': '火龙果', 'mango': '芒果', 'coconut': '椰子',
+    'avocado': '牛油果', 'broccoli': '西兰花', 'cabbage': '卷心菜',
+    'carrot': '胡萝卜', 'cauliflower': '花椰菜', 'cucumber': '黄瓜',
+    'mushroom': '蘑菇', 'pumpkin': '南瓜', 'tomato': '番茄', 'potato': '土豆',
+    'sweet potato': '红薯', 'corn': '玉米', 'bell pepper': '甜椒',
+    'onion': '洋葱', 'garlic': '大蒜', 'ginger': '姜', 'tea': '茶',
+    'coffee': '咖啡', 'milk': '牛奶', 'honey': '蜂蜜', 'cake': '蛋糕',
+    'bread': '面包', 'cookie': '饼干', 'doughnut': '甜甜圈', 'ice cream': '冰淇淋',
+    'chocolate': '巧克力', 'candy': '糖果', 'popcorn': '爆米花',
+    'pizza': '披萨', 'sandwich': '三明治', 'hotdog': '热狗',
+    'hamburger': '汉堡', 'pretzel': '椒盐卷饼', 'cheese': '奶酪',
+    'egg': '鸡蛋', 'salmon': '三文鱼', 'prawn': '虾', 'crab': '蟹',
+    'lobster': '龙虾', 'cat': '猫', 'dog': '狗', 'bird': '鸟',
+    'parrot': '鹦鹉', 'fish': '鱼', 'turtle': '龟', 'lizard': '蜥蜴',
+    'snake': '蛇', 'spider': '蜘蛛', 'butterfly': '蝴蝶', 'bee': '蜜蜂',
+    'ant': '蚂蚁', 'fly': '苍蝇', 'mosquito': '蚊子', 'cockroach': '蟑螂',
+    'scorpion': '蝎子', 'dragonfly': '蜻蜓', 'ladybug': '瓢虫',
+    'plant': '植物', 'flower': '花', 'tree': '树', 'leaf': '叶子',
+    'fruit': '水果', 'vegetable': '蔬菜',
+}
+
+
+def vision_available():
+    global _VISION
+    if _VISION['tried']:
+        return _VISION['ok']
+    _VISION['tried'] = True
+    try:
+        if not os.path.exists(VISION_MODEL):
+            _VISION['msg'] = '缺少视觉模型'
+            return False
+        import onnxruntime as ort
+        _VISION['session'] = ort.InferenceSession(VISION_MODEL, providers=['CPUExecutionProvider'])
+        with open(VISION_LABELS, 'r', encoding='utf-8', errors='replace') as f:
+            _VISION['labels'] = ['background'] + [x.strip() for x in f if x.strip()]
+        _VISION['ok'] = bool(_VISION['labels'])
+        _VISION['msg'] = 'MobileNetV2 已就绪'
+    except Exception as e:
+        _VISION['msg'] = str(e)[:120]
+        _VISION['ok'] = False
+    return _VISION['ok']
+
+
+def _vision_tag_for(label):
+    low = (label or '').lower()
+    for key, tag in _VISION_TAG_MAP.items():
+        if key in low:
+            return tag
+    return ''
+
+
+def vision_tags(path):
+    """本地 MobileNetV2 视觉标签：给图片贴“手柄/鼠标/茶/蜂蜜”这类能搜的标签。"""
+    if not vision_available():
+        return [], '视觉模型不可用'
+    try:
+        import numpy as np
+        from PIL import Image, ImageOps
+        im = Image.open(path)
+        im = ImageOps.exif_transpose(im).convert('RGB')
+        im.thumbnail((256, 256))
+        w, h = im.size
+        left = max(0, (w - 224) // 2)
+        top = max(0, (h - 224) // 2)
+        im = im.crop((left, top, left + 224, top + 224))
+        im = im.resize((224, 224), Image.BILINEAR)
+        arr = np.asarray(im, dtype='float32') / 255.0
+        mean = np.array([0.485, 0.456, 0.406], dtype='float32')
+        std = np.array([0.229, 0.224, 0.225], dtype='float32')
+        arr = (arr - mean) / std
+        arr = np.transpose(arr, (2, 0, 1))[None, ...]
+        sess = _VISION['session']
+        inp = sess.get_inputs()[0].name
+        out = sess.run(None, {inp: arr})[0][0]
+        out = np.exp(out - out.max())
+        out = out / out.sum()
+        top = out.argsort()[-5:][::-1]
+        tags = []
+        for idx in top:
+            conf = float(out[idx])
+            if conf < 0.12:
+                continue
+            label = _VISION['labels'][int(idx)] if int(idx) < len(_VISION['labels']) else ''
+            tag = _vision_tag_for(label)
+            if tag and tag not in tags:
+                tags.append(tag)
+            if len(tags) >= 3:
+                break
+        return tags, ''
+    except Exception as e:
+        return [], str(e)[:120]
+
+
 def start_content(scope='smart'):
     if CONTENT_JOB.get('running'):
         return False
@@ -2005,11 +2259,14 @@ def _content_worker(scope):
                            ' ORDER BY mtime DESC').fetchall()
         if scope == 'docs':
             imgs = []
-        elif scope == 'all':
-            imgs = con.execute('SELECT id FROM items WHERE media="图片" AND content_state<>2 AND (content_state=0 OR content_mtime<mtime)'
-                               ' AND size<=25*1024*1024 ORDER BY mtime DESC').fetchall()
+        elif scope in ('all', 'auto'):
+            limit = ' LIMIT 5000' if scope == 'auto' else ''
+            imgs = con.execute('SELECT id FROM items WHERE media="图片" AND (content_state<>2 OR vision_state<>2)'
+                               ' AND (content_state=0 OR content_mtime<mtime OR vision_state=0)'
+                               ' AND size<=25*1024*1024 ORDER BY mtime DESC' + limit).fetchall()
         else:
-            imgs = con.execute('SELECT id FROM items WHERE media="图片" AND content_state<>2 AND (content_state=0 OR content_mtime<mtime)'
+            imgs = con.execute('SELECT id FROM items WHERE media="图片" AND (content_state<>2 OR vision_state<>2)'
+                               ' AND (content_state=0 OR content_mtime<mtime OR vision_state=0)'
                                ' AND size<=25*1024*1024 AND cat IN ("截图","表情包","证照文档","品牌宣传","产品物料")'
                                ' ORDER BY mtime DESC LIMIT 3000').fetchall()
         ids = [r[0] for r in docs] + [r[0] for r in imgs]
@@ -2023,6 +2280,8 @@ def _content_worker(scope):
             row = con.execute('SELECT path,media,ext,mtime FROM items WHERE id=?', (item_id,)).fetchone()
             text = ''
             state = 2
+            auto_tags = ''
+            vision_state = 0
             if row and os.path.exists(row[0]):
                 path, media, ext, mtime = row
                 try:
@@ -2030,17 +2289,26 @@ def _content_worker(scope):
                         text = pdf_text(path)
                     elif ext in ('.ppt', '.pptx'):
                         text = pptx_text(path) if ext == '.pptx' else ''
+                    elif ext == '.docx':
+                        text = docx_text(path)
+                    elif ext in ('.txt', '.md', '.csv', '.json', '.html', '.htm', '.log'):
+                        text = plain_text(path)
                     elif media == '图片':
                         if ocr_available():
                             text = ocr_file(path)
-                        else:
+                        tags, verr = vision_tags(path)
+                        auto_tags = ','.join(tags)
+                        vision_state = 2 if not verr else 3
+                        if not text and not auto_tags:
                             state = 3
                 except Exception:
                     state = 3
+                    vision_state = 3
             else:
                 state = 3
-            con.execute('UPDATE items SET content=?,content_state=?,content_mtime=? WHERE id=?',
-                        (text[:20000], state, (row[3] if row else 0), item_id))
+                vision_state = 3
+            con.execute('UPDATE items SET content=?,content_state=?,content_mtime=?,auto_tags=?,vision_state=? WHERE id=?',
+                        (text[:20000], state, (row[3] if row else 0), auto_tags[:500], vision_state, item_id))
             if i % 10 == 0:
                 con.commit()
                 _content_set(done=i, phase='索引中', msg='正在读 %d/%d：%s' % (i, total, (row[1] if row else '')))
@@ -4002,6 +4270,14 @@ class Handler(BaseHTTPRequestHandler):
             self.api_items(q)
             return
 
+        if p == '/api/similar':
+            api_similar_image(self)
+            return
+
+        if p == '/api/feedback':
+            api_feedback(self)
+            return
+
         if p == '/api/albums':
             self.api_albums()
             return
@@ -4124,8 +4400,11 @@ class Handler(BaseHTTPRequestHandler):
             con = connect()
             indexed = con.execute('SELECT COUNT(*) FROM items WHERE content<>""').fetchone()[0]
             pending = con.execute('SELECT COUNT(*) FROM items WHERE media="文档" AND (content_state=0 OR content_mtime<mtime)').fetchone()[0]
+            pending_img = con.execute('SELECT COUNT(*) FROM items WHERE media="图片" AND (content_state<>2 OR vision_state<>2)').fetchone()[0]
             con.close()
-            self._json({'job': CONTENT_JOB, 'indexed': indexed, 'pending_docs': pending, 'ocr': ocr_available()}); return
+            self._json({'job': CONTENT_JOB, 'indexed': indexed, 'pending_docs': pending,
+                        'pending_images': pending_img, 'vision': vision_available(),
+                        'vision_msg': _VISION.get('msg', ''), 'ocr': ocr_available()}); return
 
         if p == '/api/batchrename':
             api_batch_rename(self, (q.get('ids') or [''])[0], (q.get('pattern') or [''])[0],
@@ -4150,34 +4429,7 @@ class Handler(BaseHTTPRequestHandler):
         if p == '/api/watermark/auto':
             self.api_watermark_auto(); return
 
-        if p == '/api/discover/sources':
-            self._json(discover_sources()); return
-        if p == '/api/discover/search':
-            self.api_discover_search(q); return
-        if p == '/api/discover/site':
-            self.api_discover_site(); return
-        if p == '/api/discover/thumb':
-            self.api_discover_thumb(q); return
-        if p == '/api/discover/download':
-            self.api_discover_download(); return
-        if p == '/api/discover/status':
-            self._json({'ok': True, 'job': discover_status()}); return
-        if p == '/api/discover/ingest':
-            self.api_discover_ingest(); return
-
-        if p == '/api/index/sources':
-            self._json(index_sources()); return
-        if p == '/api/index/search':
-            self._json(index_search((q.get('q') or [''])[0], (q.get('kinds') or [''])[0],
-                                    (q.get('sources') or [''])[0], (q.get('limit') or ['120'])[0])); return
-        if p == '/api/index/status':
-            self._json({'ok': True, 'job': index_status()}); return
-        if p == '/api/index/source/add':
-            self.api_index_add(); return
-        if p == '/api/index/source/remove':
-            self.api_index_remove(); return
-        if p == '/api/index/crawl':
-            self.api_index_crawl(); return
+        # v2.0：外部资源搜索已下线，只保留本地索引与本地内容搜索。
 
         self._send(404, 'not found', 'text/plain; charset=utf-8')
 
@@ -4346,37 +4598,52 @@ class Handler(BaseHTTPRequestHandler):
     def api_facets(self, q=None):
         def gv(k, d=''):
             return ((q or {}).get(k) or [d])[0]
-        t = gv('type', '')
-        key = ('facets', t, _DATA_VER)
+
+        p = {'type': gv('type', '全部'), 'cat': gv('cat', '全部'), 'loc': gv('loc', '全部'),
+             'sub': gv('sub', ''), 'q': gv('q', '').strip(), 'ext': gv('ext', ''), 'recent': gv('recent', ''),
+             'disk': gv('disk', ''), 'tag': gv('tag', ''), 'fav': gv('fav', ''),
+             'orient': gv('orient', ''), 'minw': gv('minw', ''), 'minh': gv('minh', ''),
+             'alpha': gv('alpha', ''), 'durmin': gv('durmin', ''), 'durmax': gv('durmax', '')}
+        key = ('facets',) + tuple(sorted((k, str(v)) for k, v in p.items())) + (_DATA_VER,)
         cached = _STATS_CACHE.get(key)
         if cached is not None:
             self._json(cached)
             return
+
         con = connect()
-        total = con.execute('SELECT COUNT(*) FROM items').fetchone()[0]
-        media = dict(con.execute('SELECT media, COUNT(*) FROM items GROUP BY media').fetchall())
-        cats = con.execute('SELECT cat, COUNT(*) c FROM items GROUP BY cat ORDER BY c DESC').fetchall()
-        locs = con.execute('SELECT loc, COUNT(*) c FROM items GROUP BY loc ORDER BY c DESC LIMIT 60').fetchall()
-        subs = con.execute("SELECT cat, sub, COUNT(*) c FROM items WHERE sub<>'' "
-                           "GROUP BY cat, sub ORDER BY c DESC LIMIT 80").fetchall()
-        favs = con.execute('SELECT COUNT(*) FROM fav f JOIN items i ON i.id=f.item_id').fetchone()[0]
-        tags = con.execute('SELECT t.name,COUNT(it.item_id) FROM tags t LEFT JOIN item_tags it ON it.tag_id=t.id'
-                           ' JOIN items i ON i.id=it.item_id GROUP BY t.id ORDER BY COUNT(it.item_id) DESC,t.name'
-                           ' LIMIT 80').fetchall()
-        if t and t != '全部':
-            disks = con.execute("SELECT substr(path,1,2) d, COUNT(*) c FROM items "
-                                "WHERE length(path)>3 AND media=? GROUP BY d ORDER BY d", (t,)).fetchall()
-        else:
-            disks = con.execute("SELECT substr(path,1,2) d, COUNT(*) c FROM items "
-                                "WHERE length(path)>3 GROUP BY d ORDER BY d").fetchall()
+
+        def query(sql, overrides=None, group=''):
+            pp = dict(p)
+            if overrides:
+                pp.update(overrides)
+            wsql, args = _filter(pp)
+            return con.execute(sql + ' ' + wsql + (' ' + group if group else ''), args)
+
+        total = query('SELECT COUNT(*) FROM items').fetchone()[0]
+        media = dict(query('SELECT media, COUNT(*) FROM items',
+                           {'type': '全部'}, 'GROUP BY media').fetchall())
+        cats = query('SELECT cat, COUNT(*) c FROM items',
+                     {'cat': '全部'}, 'GROUP BY cat').fetchall()
+        locs = query('SELECT loc, COUNT(*) c FROM items',
+                     {'loc': '全部'}, 'GROUP BY loc').fetchall()
+        subs = query('SELECT cat, sub, COUNT(*) c FROM items',
+                     {'sub': ''}, 'GROUP BY cat, sub').fetchall()
+        disks = query('SELECT substr(path,1,2) d, COUNT(*) c FROM items',
+                      {'disk': ''}, 'GROUP BY d').fetchall()
+        favs = query('SELECT COUNT(*) FROM fav f JOIN items ON items.id=f.item_id',
+                     {'fav': ''}).fetchone()[0]
+        tags = query('SELECT t.name,COUNT(it.item_id) FROM tags t '
+                     'JOIN item_tags it ON it.tag_id=t.id '
+                     'JOIN items ON items.id=it.item_id',
+                     {'tag': ''}, 'GROUP BY t.name').fetchall()
         con.close()
         data = {'total': total, 'media': media,
-                'cats': [{'k': k, 'n': n} for k, n in cats],
-                'locs': [{'k': k, 'n': n} for k, n in locs],
+                'cats': sorted([{'k': k, 'n': n} for k, n in cats if k], key=lambda x: -x['n']),
+                'locs': sorted([{'k': k, 'n': n} for k, n in locs if k], key=lambda x: -x['n'])[:60],
                 'disks': [{'k': k, 'n': n} for k, n in disks if k and k[0].isalpha() and k[1] == ':'],
-                'subs': [{'cat': c, 'k': s, 'n': n} for c, s, n in subs],
-                'tags': [{'name': k, 'n': n} for k, n in tags], 'fav': favs,
-                'trash': _trash_count(), 'meta': META_JOB}
+                'subs': sorted([{'cat': c, 'k': s, 'n': n} for c, s, n in subs if s], key=lambda x: -x['n'])[:80],
+                'tags': sorted([{'name': k, 'n': n} for k, n in tags], key=lambda x: (-x['n'], x['name']))[:80],
+                'fav': favs, 'trash': _trash_count(), 'meta': META_JOB}
         _STATS_CACHE[key] = data
         self._json(data)
 
@@ -4406,13 +4673,15 @@ class Handler(BaseHTTPRequestHandler):
         rows = con.execute(
             'SELECT id,name,ext,media,size,mtime,loc,cat,w,h,path,sub,'
             '(SELECT 1 FROM fav f WHERE f.item_id=items.id) fav,'
-            '(SELECT group_concat(t.name,\'|\') FROM item_tags it JOIN tags t ON t.id=it.tag_id WHERE it.item_id=items.id) tags'
+            '(SELECT group_concat(t.name,\'|\') FROM item_tags it JOIN tags t ON t.id=it.tag_id WHERE it.item_id=items.id) tags,'
+            'auto_tags,substr(content,1,120) snip'
             ' FROM items ' + wsql +
             ' ORDER BY ' + order + ' LIMIT ? OFFSET ?', args + [limit, offset]).fetchall()
         con.close()
         items = [{'id': r[0], 'name': r[1], 'ext': r[2], 'media': r[3], 'size': r[4],
                   'mtime': r[5], 'loc': r[6], 'cat': r[7], 'w': r[8], 'h': r[9], 'path': r[10],
-                  'sub': r[11] or '', 'fav': bool(r[12]), 'tags': (r[13] or '').split('|') if r[13] else []}
+                  'sub': r[11] or '', 'fav': bool(r[12]), 'tags': (r[13] or '').split('|') if r[13] else [],
+                  'auto_tags': (r[14] or '').split(',') if r[14] else [], 'snip': r[15] or ''}
                  for r in rows]
         self._json({'total': total, 'items': items, 'offset': offset})
 
@@ -4420,7 +4689,8 @@ class Handler(BaseHTTPRequestHandler):
         con = connect()
         r = con.execute('SELECT id,name,ext,media,size,mtime,loc,cat,w,h,path,sub,'
                         '(SELECT 1 FROM fav f WHERE f.item_id=items.id),'
-                        '(SELECT group_concat(t.name,\'|\') FROM item_tags it JOIN tags t ON t.id=it.tag_id WHERE it.item_id=items.id)'
+                        '(SELECT group_concat(t.name,\'|\') FROM item_tags it JOIN tags t ON t.id=it.tag_id WHERE it.item_id=items.id),'
+                        'auto_tags,substr(content,1,120)'
                         ' FROM items WHERE id=?', (item_id,)).fetchone()
         con.close()
         if not r:
@@ -4428,7 +4698,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._json({'id': r[0], 'name': r[1], 'ext': r[2], 'media': r[3], 'size': r[4], 'mtime': r[5],
                     'loc': r[6], 'cat': r[7], 'w': r[8], 'h': r[9], 'path': r[10], 'sub': r[11] or '',
-                    'fav': bool(r[12]), 'tags': (r[13] or '').split('|') if r[13] else []})
+                    'fav': bool(r[12]), 'tags': (r[13] or '').split('|') if r[13] else [],
+                    'auto_tags': (r[14] or '').split(',') if r[14] else [], 'snip': r[15] or ''})
 
     def api_albums(self):
         key = ('albums', _DATA_VER)

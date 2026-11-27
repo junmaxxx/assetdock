@@ -13,14 +13,17 @@
 import os
 import re
 import sys
+import io
 import json
 import time
 import math
 import uuid
 import shutil
 import socket
+import base64
 import hashlib
 import sqlite3
+import tempfile
 import subprocess
 import webbrowser
 import threading
@@ -2179,6 +2182,378 @@ def api_batch_convert(self, ids_s, fmt='webp', quality=85, dest=''):
 
 
 
+# ---------------- 格式转换 ----------------
+CONVERT_JOB = {'running': False, 'phase': 'idle', 'total': 0, 'done': 0, 'ok': 0, 'failed': 0,
+               'msg': '', 'results': [], 'errors': [], 'started': 0, 'ended': 0}
+CONVERT_LOCK = threading.Lock()
+
+
+def _cjob(**kw):
+    with CONVERT_LOCK:
+        CONVERT_JOB.update(kw)
+
+
+def convert_status():
+    with CONVERT_LOCK:
+        return dict(CONVERT_JOB)
+
+
+def _index_output(path, media):
+    """把转换出来的新文件写进索引，界面不用重启也能看到。"""
+    try:
+        st = os.stat(path)
+        con = connect()
+        con.execute('INSERT INTO items(path,name,ext,media,size,mtime,loc,cat,sub,seen_run)'
+                    ' VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET size=excluded.size,'
+                    ' mtime=excluded.mtime,seen_run=excluded.seen_run',
+                    (path, os.path.basename(path), os.path.splitext(path)[1].lower(), media,
+                     st.st_size, int(st.st_mtime), location_of(path), guess_cat(path, media),
+                     sub_of(path, media), int(time.time() * 1000)))
+        con.commit()
+        con.close()
+        return True
+    except Exception:
+        return False
+
+
+def _ppt_to_pdf_direct(src, out):
+    """真正调用本机 WPS / PowerPoint 的 COM 接口；只在独立子进程里跑，避免干扰主程序。"""
+    try:
+        import comtypes
+        import comtypes.client
+    except Exception:
+        raise RuntimeError('缺少 comtypes 组件，无法调用本机 PowerPoint/WPS')
+    comtypes.CoInitialize()
+    app = None
+    pres = None
+    last = None
+    try:
+        for progid in ('KWPP.Application', 'PowerPoint.Application'):
+            try:
+                app = comtypes.client.CreateObject(progid, dynamic=True)
+                # ReadOnly=True, Untitled=False, WithWindow=False：不弹窗，也不改动原文件
+                pres = app.Presentations.Open(src, True, False, False)
+                pres.SaveAs(out, 32)  # 32 = ppSaveAsPDF
+                last = None
+                break
+            except Exception as e:
+                last = e
+                try:
+                    if pres is not None:
+                        pres.Close()
+                except Exception:
+                    pass
+                pres = None
+                try:
+                    if app is not None:
+                        app.Quit()
+                except Exception:
+                    pass
+                app = None
+    finally:
+        try:
+            if pres is not None:
+                pres.Close()
+        except Exception:
+            pass
+        try:
+            if app is not None:
+                app.Quit()
+        except Exception:
+            pass
+        try:
+            comtypes.CoUninitialize()
+        except Exception:
+            pass
+    if last is not None:
+        raise RuntimeError('PPT 转 PDF 失败（本机需安装 WPS 或 PowerPoint）：' + str(last)[:180])
+    if not os.path.exists(out) or os.path.getsize(out) <= 0:
+        raise RuntimeError('PPT 导出后没有生成 PDF 文件')
+
+
+def _ppt_to_pdf(src, out):
+    """在主程序里用独立子进程调用 COM，失败不会拖垮素材坞，也不会留下 COM 状态。"""
+    if os.environ.get('ASSETDOCK_PPT_CHILD') == '1':
+        return _ppt_to_pdf_direct(src, out)
+    log = out + '.log'
+    try:
+        if os.path.exists(log):
+            os.remove(log)
+    except Exception:
+        pass
+    if getattr(sys, 'frozen', False):
+        cmd = [sys.executable, '--ppt2pdf', src, out]
+    else:
+        cmd = [sys.executable, os.path.abspath(__file__), '--ppt2pdf', src, out]
+    env = os.environ.copy()
+    env['ASSETDOCK_PPT_CHILD'] = '1'
+    flags = 0
+    if os.name == 'nt':
+        flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
+    try:
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=240,
+                           creationflags=flags)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError('PPT 转 PDF 超时（文件太大或 WPS/PowerPoint 没有响应）')
+    if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 0:
+        try:
+            os.remove(log)
+        except Exception:
+            pass
+        return
+    detail = ''
+    try:
+        if os.path.exists(log):
+            with open(log, 'r', encoding='utf-8', errors='ignore') as f:
+                detail = f.read().strip()
+            os.remove(log)
+    except Exception:
+        pass
+    if not detail:
+        detail = (r.stderr or r.stdout or '').strip()[-240:]
+    raise RuntimeError(detail or 'PPT 转 PDF 失败（本机需安装 WPS 或 PowerPoint）')
+
+
+def _pdf_to_images(pdf_path, folder, base, fmt, dpi):
+    import pypdfium2 as pdfium
+    outs = []
+    scale = max(72.0, min(600.0, float(dpi or 200))) / 72.0
+    # pdfium 不是线程安全的，和封面渲染共用同一把锁
+    with _PDF_LOCK:
+        pdf = pdfium.PdfDocument(pdf_path)
+        try:
+            n = len(pdf)
+            if n <= 0:
+                raise RuntimeError('PDF 里没有页面')
+            for i in range(n):
+                page = pdf[i]
+                try:
+                    im = page.render(scale=scale).to_pil()
+                    if fmt == 'jpg':
+                        im = im.convert('RGB')
+                        target = _unique_target(folder, '%s_第%02d页.jpg' % (base, i + 1))
+                        im.save(target, 'JPEG', quality=92, optimize=True)
+                    else:
+                        target = _unique_target(folder, '%s_第%02d页.png' % (base, i + 1))
+                        im.save(target, 'PNG', optimize=True)
+                    outs.append(target)
+                finally:
+                    page.close()
+        finally:
+            pdf.close()
+    return outs
+
+
+def _flatten_rgb(im):
+    """透明图转 JPG/PDF 时铺白底，避免透明区域变成黑色。"""
+    from PIL import Image
+    if ('A' in im.getbands()) or im.mode in ('P', 'LA'):
+        rgba = im.convert('RGBA')
+        bg = Image.new('RGB', rgba.size, (255, 255, 255))
+        bg.paste(rgba, mask=rgba.getchannel('A'))
+        return bg
+    return im.convert('RGB')
+
+
+def _image_to_pdf(path, target):
+    from PIL import Image, ImageOps
+    with Image.open(path) as im:
+        im = ImageOps.exif_transpose(im)
+        _flatten_rgb(im).save(target, 'PDF', resolution=150.0, quality=92)
+
+
+def _images_to_pdf(paths, target):
+    from PIL import Image, ImageOps
+    imgs = []
+    try:
+        for p in paths:
+            with Image.open(p) as im:
+                imgs.append(_flatten_rgb(ImageOps.exif_transpose(im)).copy())
+        imgs[0].save(target, 'PDF', save_all=True, append_images=imgs[1:],
+                     resolution=150.0, quality=92)
+    finally:
+        for im in imgs:
+            try:
+                im.close()
+            except Exception:
+                pass
+
+
+def _convert_one(path, name, ext, media, target, dpi, dest):
+    """单个源文件转换，返回输出文件列表；失败抛异常。"""
+    folder = dest or os.path.dirname(path)
+    os.makedirs(folder, exist_ok=True)
+    base = os.path.splitext(name)[0]
+    ext = (ext or '').lower()
+
+    if ext in ('.ppt', '.pptx'):
+        if target == 'pdf':
+            out = _unique_target(folder, base + '.pdf')
+            _ppt_to_pdf(path, out)
+            return [out]
+        tmpdir = tempfile.mkdtemp(prefix='assetdock_ppt_')
+        try:
+            tmp_pdf = os.path.join(tmpdir, 'slides.pdf')
+            _ppt_to_pdf(path, tmp_pdf)
+            return _pdf_to_images(tmp_pdf, folder, base, target, dpi)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    if ext == '.pdf':
+        if target == 'pdf':
+            raise RuntimeError('PDF 不需要再转 PDF')
+        return _pdf_to_images(path, folder, base, target, dpi)
+
+    if media == '图片':
+        if target == 'pdf':
+            out = _unique_target(folder, base + '.pdf')
+            _image_to_pdf(path, out)
+            return [out]
+        from PIL import Image, ImageOps
+        with Image.open(path) as im:
+            im = ImageOps.exif_transpose(im)
+            if target == 'jpg':
+                out = _unique_target(folder, base + '.jpg')
+                _flatten_rgb(im).save(out, 'JPEG', quality=92, optimize=True)
+            else:
+                out = _unique_target(folder, base + '.png')
+                if im.mode not in ('RGB', 'RGBA'):
+                    im = im.convert('RGBA')
+                im.save(out, 'PNG', optimize=True)
+            return [out]
+
+    raise RuntimeError('这个格式暂不支持转换')
+
+
+def _convert_worker(rows, target, dpi, dest):
+    total = len(rows)
+    ok = failed = 0
+    results, errors = [], []
+    n_pre = 0
+    try:
+        # 多张图片转 PDF：合成一个文件，方便直接发出去
+        if target == 'pdf':
+            pics = [r for r in rows if r[4] == '图片']
+            if len(pics) > 1:
+                folder = dest or os.path.dirname(pics[0][1])
+                os.makedirs(folder, exist_ok=True)
+                name = '图片合集_' + time.strftime('%Y%m%d_%H%M%S') + '.pdf'
+                out = _unique_target(folder, name)
+                try:
+                    _images_to_pdf([r[1] for r in pics], out)
+                    _index_output(out, '文档')
+                    ok += len(pics)
+                    results.append({'id': 0, 'name': os.path.basename(out), 'path': out, 'n': len(pics)})
+                except Exception as e:
+                    failed += len(pics)
+                    errors.append({'name': '图片合并 PDF', 'msg': str(e)[:180]})
+                rows = [r for r in rows if r[4] != '图片']
+                n_pre = len(pics)
+                total = n_pre + len(rows)
+
+        for idx, (item_id, path, name, ext, media) in enumerate(rows, 1):
+            _cjob(msg='正在处理 %d/%d：%s' % (n_pre + idx, total, name), done=n_pre + idx - 1)
+            try:
+                outs = _convert_one(path, name, ext, media, target, dpi, dest)
+                for out in outs:
+                    _index_output(out, '图片' if out.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')) else '文档')
+                ok += 1
+                results.append({'id': item_id, 'name': name, 'outs': [os.path.basename(x) for x in outs],
+                                'n': len(outs), 'path': outs[0] if outs else ''})
+                if len(results) > 200:
+                    results = results[-200:]
+            except Exception as e:
+                failed += 1
+                errors.append({'name': name, 'msg': str(e)[:180]})
+                if len(errors) > 200:
+                    errors = errors[-200:]
+        done = total
+        msg = '完成：成功 %d 项，失败 %d 项' % (ok, failed)
+        if errors:
+            msg += '；' + errors[0]['msg']
+        _cjob(running=False, phase='done', done=done, ok=ok, failed=failed, msg=msg,
+              results=results, errors=errors, ended=time.time())
+        if ok:
+            bump_data()
+    except Exception as e:
+        _cjob(running=False, phase='error', msg='转换任务异常：' + str(e)[:200], ended=time.time())
+    finally:
+        # 兜底：异常路径也要释放 running，避免以后一直转不了
+        if CONVERT_JOB.get('running'):
+            _cjob(running=False, phase='error', msg='转换任务意外结束', ended=time.time())
+
+
+def start_convert(ids, target, dpi=200, dest=''):
+    target = (target or '').lower()
+    if target not in ('pdf', 'png', 'jpg'):
+        return False, '目标格式只支持 PDF / PNG / JPG'
+    if isinstance(ids, (list, tuple)):
+        try:
+            ids = [int(x) for x in ids][:300]
+        except (TypeError, ValueError):
+            return False, '选中的文件编号不正确'
+    else:
+        ids = parse_ids(str(ids), 300)
+    if not ids:
+        return False, '先选中要转换的文件'
+    dest = (dest or '').strip().strip('"')
+    if dest and not os.path.isabs(dest):
+        return False, '输出目录要填完整路径'
+    with CONVERT_LOCK:
+        if CONVERT_JOB.get('running'):
+            return False, '已有一个转换任务在跑，等它完成再试'
+        CONVERT_JOB.update({'running': True, 'phase': 'running', 'total': len(ids), 'done': 0,
+                            'ok': 0, 'failed': 0, 'msg': '准备中…', 'results': [], 'errors': [],
+                            'started': time.time(), 'ended': 0})
+    con = connect()
+    rows = []
+    for i in ids:
+        r = con.execute('SELECT id,path,name,ext,media FROM items WHERE id=?', (i,)).fetchone()
+        if r and os.path.exists(r[1]):
+            rows.append(r)
+    con.close()
+    if not rows:
+        _cjob(running=False, phase='error', msg='选中的文件都已不在原位')
+        return False, '选中的文件都已不在原位'
+    t = threading.Thread(target=_convert_worker, args=(rows, target, dpi, dest), daemon=True)
+    t.start()
+    return True, '已开始转换 %d 项' % len(rows)
+
+
+def watermark_remove_file(path, name, mask_s, radius=4):
+    """按涂抹遮罩做本地 inpaint，返回新副本路径；不覆盖原图。"""
+    import numpy as np
+    import cv2
+    from PIL import Image, ImageOps
+    raw = mask_s.split(',', 1)[-1] if ',' in mask_s else mask_s
+    mimg = Image.open(io.BytesIO(base64.b64decode(raw))).convert('L')
+    with Image.open(path) as src:
+        src = ImageOps.exif_transpose(src)
+        has_alpha = ('A' in src.getbands()) or src.mode in ('P', 'LA')
+        rgba = src.convert('RGBA') if has_alpha else None
+        rgb = src.convert('RGB')
+        w, h = rgb.size
+        if mimg.size != (w, h):
+            mimg = mimg.resize((w, h), Image.BILINEAR)
+        m = np.array(mimg, dtype=np.uint8)
+        m = np.where(m > 18, 255, 0).astype(np.uint8)
+        if int(m.sum()) == 0:
+            raise RuntimeError('还没有涂抹水印区域')
+        radius = max(1, min(12, int(radius or 4)))
+        if radius > 2:
+            m = cv2.dilate(m, np.ones((3, 3), np.uint8), iterations=max(1, radius // 2))
+        bgr = cv2.cvtColor(np.array(rgb), cv2.COLOR_RGB2BGR)
+        fixed = cv2.inpaint(bgr, m, radius, cv2.INPAINT_TELEA)
+        out_img = Image.fromarray(cv2.cvtColor(fixed, cv2.COLOR_BGR2RGB))
+        if rgba is not None:
+            out_img.putalpha(rgba.getchannel('A'))
+        folder = os.path.dirname(path)
+        base = os.path.splitext(name)[0]
+        target = _unique_target(folder, base + '_去水印.png')
+        out_img.save(target, 'PNG', optimize=True)
+    return target
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = 'MediaLib'
 
@@ -2202,6 +2577,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj, ensure_ascii=False), 'application/json; charset=utf-8')
 
     def do_GET(self):
+        if not hasattr(self, '_json_body'):
+            self._json_body = {}
         u = urlparse(self.path)
         q = parse_qs(u.query)
         p = u.path
@@ -2365,14 +2742,96 @@ class Handler(BaseHTTPRequestHandler):
             api_batch_convert(self, (q.get('ids') or [''])[0], (q.get('fmt') or ['webp'])[0],
                               (q.get('quality') or ['85'])[0], (q.get('dest') or [''])[0]); return
 
+        if p == '/api/convert/start':
+            self.api_convert_start(); return
+        if p == '/api/convert/status':
+            self._json({'ok': True, 'job': convert_status()}); return
+
+        m = re.match(r'^/api/wm/preview/(\d+)$', p)
+        if m:
+            self.api_wm_preview(int(m.group(1))); return
+        if p == '/api/watermark/remove':
+            self.api_watermark_remove(); return
+
         self._send(404, 'not found', 'text/plain; charset=utf-8')
 
     def do_HEAD(self):
         self.do_GET()
 
     def do_POST(self):
-        # 打开/定位这类动作走 POST，复用 GET 的分发
+        # 打开/定位这类动作走 POST，复用 GET 的分发；转换/去水印需要读 JSON 请求体
+        self._json_body = {}
+        try:
+            n = int(self.headers.get('Content-Length') or 0)
+            if 0 < n <= 48 * 1024 * 1024:
+                raw = self.rfile.read(n)
+                if raw:
+                    self._json_body = json.loads(raw.decode('utf-8'))
+        except Exception:
+            self._json_body = {}
         self.do_GET()
+
+    def api_convert_start(self):
+        d = self._json_body or {}
+        ok, msg = start_convert(d.get('ids') or [], d.get('target') or 'pdf',
+                                d.get('dpi') or 200, d.get('dest') or '')
+        self._json({'ok': ok, 'msg': msg, 'job': convert_status()})
+
+    def api_wm_preview(self, item_id):
+        con = connect()
+        row = con.execute('SELECT path, ext, media FROM items WHERE id=?', (item_id,)).fetchone()
+        con.close()
+        if not row or row[2] != '图片' or not os.path.exists(row[0]):
+            self._send(404, '这张图片已不在原位', 'text/plain; charset=utf-8')
+            return
+        try:
+            from PIL import Image, ImageOps
+            with Image.open(row[0]) as im:
+                im = ImageOps.exif_transpose(im)
+                im.thumbnail((2400, 2400), Image.LANCZOS)
+                if im.mode not in ('RGB', 'RGBA'):
+                    im = im.convert('RGBA' if 'A' in im.getbands() else 'RGB')
+                buf = io.BytesIO()
+                im.save(buf, 'PNG', optimize=True)
+            self._send(200, buf.getvalue(), 'image/png')
+        except Exception as e:
+            self._send(404, '这个图片格式解不出来，暂时不能去水印：' + str(e)[:80],
+                       'text/plain; charset=utf-8')
+
+    def api_watermark_remove(self):
+        d = self._json_body or {}
+        try:
+            item_id = int(d.get('id') or 0)
+        except (TypeError, ValueError):
+            item_id = 0
+        mask_s = d.get('mask') or ''
+        if not item_id or not mask_s:
+            self._json({'ok': False, 'msg': '缺少图片或涂抹遮罩'}, 400)
+            return
+        con = connect()
+        row = con.execute('SELECT path, name, ext, media FROM items WHERE id=?', (item_id,)).fetchone()
+        con.close()
+        if not row or row[3] != '图片' or not os.path.exists(row[0]):
+            self._json({'ok': False, 'msg': '这张图片已不在原位'}, 404)
+            return
+        path, name, ext, media = row
+        try:
+            target = watermark_remove_file(path, name, mask_s, d.get('radius') or 4)
+            _index_output(target, '图片')
+            bump_data()
+            self._json({'ok': True, 'path': target, 'name': os.path.basename(target),
+                        'id': self._lookup_id(target), 'msg': '已生成去水印副本'})
+        except Exception as e:
+            self._json({'ok': False, 'msg': '去水印失败：' + str(e)[:180]}, 500)
+
+    def _lookup_id(self, path):
+        try:
+            con = connect()
+            r = con.execute('SELECT id FROM items WHERE path=?', (path,)).fetchone()
+            con.close()
+            return r[0] if r else 0
+        except Exception:
+            return 0
 
     def api_facets(self, q=None):
         def gv(k, d=''):
@@ -3260,6 +3719,18 @@ def auto_scan_loop(interval=900):
 
 
 def main():
+    # PPT 转 PDF 的独立子进程入口：只跑 COM，不开界面，也不碰索引
+    if len(sys.argv) >= 4 and sys.argv[1] == '--ppt2pdf':
+        try:
+            _ppt_to_pdf_direct(sys.argv[2], sys.argv[3])
+        except Exception as e:
+            try:
+                with open(sys.argv[3] + '.log', 'w', encoding='utf-8') as f:
+                    f.write(str(e)[:500])
+            except Exception:
+                pass
+            sys.exit(1)
+        sys.exit(0)
     args = [a for a in sys.argv[1:]]
     cmd = args[0] if args else 'gui'
     if cmd.startswith('-'):

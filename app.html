@@ -327,6 +327,15 @@
   .tagbox .none{color:#606879;font-size:12px}
   .opsec{border-top:1px dashed rgba(70,80,105,.55);padding-top:4px;margin-top:10px}
   .opsec:first-of-type{border-top:0}
+  .wmstage{position:relative;margin:10px auto 0;background:#0b0d12;border:1px solid rgba(62,72,94,.7);
+    border-radius:10px;overflow:hidden;max-width:100%;min-height:220px}
+  .wmstage canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
+  #wmview{cursor:crosshair;touch-action:none}
+  #wmbase{pointer-events:none}
+  .cfrow{padding:7px 2px;border-bottom:1px solid rgba(60,70,92,.3);font-size:12px;color:#cfd6e6;
+    display:flex;gap:8px;align-items:center}
+  .cfrow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cfrow .sz{color:#8f98ad;font-size:11px;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -374,7 +383,7 @@
   <span>Ctrl+滚轮 缩放界面</span>
   <span>Ctrl+Alt+Space 唤起搜索</span>
   <span>后台每 15 分钟自动补扫，新素材自动出现</span>
-  <span style="margin-left:auto;color:#3f4657">素材坞 v1.6.5 · 本地运行</span>
+  <span style="margin-left:auto;color:#3f4657">素材坞 v1.6.6 · 本地运行</span>
 </footer>
 
 <div id="batchbar">
@@ -450,6 +459,8 @@
       <button class="tool" id="open-trash"><span class="ti">🗑</span><span><b>待删除箱</b><em id="trashcnt">0 项 · 可还原</em></span></button>
       <button class="tool" id="open-dupe"><span class="ti">⧉</span><span><b>重复与相似</b><em>清理占空间的重复图</em></span></button>
       <button class="tool" id="open-content"><span class="ti">⌕</span><span><b>内容索引</b><em>OCR 截图、PDF 正文</em></span></button>
+      <button class="tool" id="open-convert"><span class="ti">⇄</span><span><b>格式转换</b><em>PPT / PDF / 图片 互转</em></span></button>
+      <button class="tool" id="open-wm"><span class="ti">✎</span><span><b>图片去水印</b><em>涂抹水印后本地补背景</em></span></button>
     </div>
     <div class="toolsec" id="contentsec">
       <div class="tsh">内容索引 <span id="ocrstat" class="mini"></span></div>
@@ -520,6 +531,54 @@
       <input id="cvdest" class="ipt" placeholder="输出目录（留空=原目录）"><button class="ghost" id="cvbtn">转换</button></div>
       <div class="mini">只处理图片，原图保留；转换完成后可再用重复清理删原图。</div>
     </div>
+  </div>
+</div>
+
+<!-- 格式转换 -->
+<div id="convertdlg" class="panel">
+  <div class="pbox">
+    <div class="phead"><b>格式转换</b><span class="mini" id="cfsum"></span><button class="pclose" data-close="convertdlg">✕</button></div>
+    <div class="opsec">
+      <div class="tsh">转成什么</div>
+      <div class="trow">
+        <select id="cftarget" class="sel">
+          <option value="pdf">PDF 文档</option>
+          <option value="png">PNG 图片（每页一张）</option>
+          <option value="jpg">JPG 图片（每页一张）</option>
+        </select>
+        <select id="cfdpi" class="sel" title="只影响 PPT/PDF 转图片">
+          <option value="144">144 DPI · 小文件</option>
+          <option value="200" selected>200 DPI · 推荐</option>
+          <option value="300">300 DPI · 高清</option>
+        </select>
+      </div>
+      <div class="trow"><input id="cfdest" class="ipt" placeholder="输出目录（留空=各自原目录）"></div>
+      <div class="mini">支持 PPT/PPTX → PDF/PNG/JPG，PDF → PNG/JPG，图片 → PDF/PNG/JPG。原文件不动，同名自动加序号；多张图片转 PDF 会合成一个文件。</div>
+    </div>
+    <div class="trow"><button class="ghost" id="cfstart">开始转换</button><span class="mini" id="cfnote">PPT 需要本机装有 WPS 或 PowerPoint</span></div>
+    <div class="prog"><i id="cfbar"></i></div>
+    <div class="mini" id="cfmsg">选好目标格式后开始。</div>
+    <div class="plist" id="cfresults"></div>
+  </div>
+</div>
+
+<!-- 图片去水印 -->
+<div id="wmpanel" class="panel">
+  <div class="pbox wide">
+    <div class="phead"><b>图片去水印</b><span class="mini" id="wmname"></span><button class="pclose" data-close="wmpanel">✕</button></div>
+    <div class="trow">
+      <span class="mini">笔刷</span><input type="range" id="wmbrush" min="8" max="120" value="28" step="2" style="width:150px">
+      <span class="mini" id="wmbrushval">28 px</span>
+      <button class="ghost" id="wmundo">撤销一笔</button>
+      <button class="ghost" id="wmclear">清空</button>
+      <button class="ghost" id="wmrun">去除水印</button>
+    </div>
+    <div class="wmstage" id="wmstage">
+      <canvas id="wmbase"></canvas>
+      <canvas id="wmview"></canvas>
+      <canvas id="wmraw" style="display:none"></canvas>
+    </div>
+    <div class="mini" id="wmmsg" style="margin-top:8px">用水印处涂满整条水印，再点「去除水印」。只生成副本，原图保留；小面积文字/角标效果最好，复杂纹理会有涂抹感。</div>
   </div>
 </div>
 
@@ -1306,6 +1365,8 @@ function showCtx(id, x, y){
     [it.media === '图片' ? '查看图片（内置查看器）' : (it.media === '文档' ? '查看封面' : '播放'), '双击', () => openItem(id)],
     ['用系统程序打开', '', () => act('open', id)],
     ...((it.media === '视频' || it.media === '音频') ? [['用内置播放器打开', '全编码 mpv', () => mpvPlay(id)]] : []),
+    ...(it.media === '图片' ? [['去水印…', '涂抹水印区域后本地补背景', () => openWatermark(id)]] : []),
+    ...((it.media === '图片' || it.media === '文档') ? [['转换格式…', 'PPT / PDF / 图片', () => openConvert(id)]] : []),
     ['打开文件所在位置', '', () => act('reveal', id)],
     ['-'],
     [it.fav ? '★ 取消收藏' : '☆ 收藏', '', () => toggleFav([id])],
@@ -1339,6 +1400,7 @@ function showBatchCtx(id, x, y){
   const picked = selSet.has(id);
   const rows = picked ? [
     ['整理选中的 ' + n + ' 项…', '重命名 / 移动 / 压缩', () => openOps(), ''],
+    ['转换格式…', 'PPT / PDF / 图片', () => openConvert()],
     ['加标签…', '', () => openTagDialog([...selSet], null)],
     ['收藏选中项', '', () => toggleFav([...selSet], true)],
     ['删除选中的 ' + n + ' 项', '移到待删除箱（需确认）', deleteSelected, 'danger'],
@@ -1428,6 +1490,12 @@ document.getElementById('toolsbtn').onclick = () => { openPanel('toolpanel'); po
 document.getElementById('open-trash').onclick = () => { openPanel('trashpanel'); loadTrash(); };
 document.getElementById('open-dupe').onclick = () => { openPanel('dupepanel'); loadDupes(); };
 document.getElementById('open-content').onclick = () => { pollContent(); document.getElementById('contentsec').scrollIntoView({block:'center'}); };
+document.getElementById('open-convert').onclick = () => openConvert();
+document.getElementById('open-wm').onclick = () => {
+  const id = [...selSet][0] || vId || curId;
+  if (!id) { toast('先在网格里选中一张图片'); return; }
+  openWatermark(id);
+};
 
 function patchItem(id, fn){
   const it = itemOf(id);
@@ -1650,6 +1718,219 @@ document.getElementById('cvbtn').onclick = async () => {
   toast(r.ok ? ('已转换 '+r.converted+' 个，节省 '+kb(r.saved||0)) : (r.msg||'失败'));
   if (r.ok) { closePanel('opsdlg'); loadFacets(); resetAndLoad(); }
 };
+
+/* ---------- 格式转换 ---------- */
+let cfIds = [];
+let cfTimer = null;
+let cfRunning = false;
+function openConvert(id){
+  let ids = id ? [id] : [...selSet];
+  if (!ids.length && vId) ids = [vId];
+  if (!ids.length) { toast('先选中要转换的文件'); return; }
+  cfIds = ids;
+  document.getElementById('cfsum').textContent = '已选 ' + ids.length + ' 项';
+  document.getElementById('cfresults').innerHTML = '';
+  document.getElementById('cfmsg').textContent = '选好目标格式后开始。';
+  document.getElementById('cfbar').style.width = '0%';
+  openPanel('convertdlg');
+  // 如果后台已经有任务在跑，直接接上进度
+  fetch('/api/convert/status').then(r=>r.json()).then(st=>{
+    const j = st.job || {};
+    if (j.running) { cfRunning=true; cfPoll(); }
+  }).catch(()=>{});
+}
+function cfRenderResults(job){
+  const results = job.results || [], errors = job.errors || [];
+  let html = '';
+  results.forEach(r=>{
+    const nm = r.n > 1 ? (r.outs ? r.outs.length + ' 个文件 · ' + r.outs[0] : r.n + ' 张图片合并') : (r.outs ? r.outs[0] : r.name);
+    html += '<div class="cfrow"><span class="nm" title="'+esc(nm)+'">'+esc(nm)+'</span><span class="sz">'+esc(r.name||'')+'</span></div>';
+  });
+  errors.forEach(e=>{
+    html += '<div class="cfrow"><span class="nm" style="color:#ff9d9d" title="'+esc(e.msg||'')+'">'+esc(e.name||'')+' 失败</span><span class="sz" style="color:#ff9d9d">'+esc((e.msg||'').slice(0,80))+'</span></div>';
+  });
+  document.getElementById('cfresults').innerHTML = html;
+}
+async function cfPoll(){
+  if (cfTimer) return;
+  const tick = async () => {
+    let st;
+    try { st = await fetch('/api/convert/status').then(r=>r.json()); } catch(e) { return; }
+    const j = st.job || {};
+    const pct = j.total ? Math.min(100, Math.round((j.done||0)/j.total*100)) : (j.phase==='done'?100:0);
+    document.getElementById('cfbar').style.width = pct + '%';
+    document.getElementById('cfmsg').textContent = j.running ? (j.msg || ('正在处理 ' + (j.done||0) + '/' + (j.total||0))) : (j.msg || '完成');
+    if (!j.running) {
+      cfRunning = false;
+      clearInterval(cfTimer); cfTimer = null;
+      document.getElementById('cfstart').disabled = false;
+      if (j.phase === 'done') {
+        cfRenderResults(j);
+        loadFacets();
+        if (S.view === 'grid') resetAndLoad(); else showAlbums();
+      }
+    }
+  };
+  cfRunning = true;
+  document.getElementById('cfstart').disabled = true;
+  await tick();
+  cfTimer = setInterval(tick, 800);
+}
+document.getElementById('cfstart').onclick = async () => {
+  if (cfRunning) { toast('转换正在进行中'); return; }
+  if (!cfIds.length) { toast('先选中要转换的文件'); return; }
+  const target = document.getElementById('cftarget').value;
+  const dpi = document.getElementById('cfdpi').value;
+  const dest = document.getElementById('cfdest').value.trim();
+  const r = await fetch('/api/convert/start', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ids:cfIds, target, dpi, dest})}).then(x=>x.json()).catch(()=>({ok:false,msg:'请求失败'}));
+  if (!r.ok) { toast(r.msg || '启动失败'); return; }
+  document.getElementById('cfresults').innerHTML = '';
+  document.getElementById('cfbar').style.width = '0%';
+  toast(r.msg || '已开始转换');
+  cfPoll();
+};
+
+/* ---------- 图片去水印 ---------- */
+let wmId = 0, wmImg = null, wmStrokes = [], wmCur = null, wmDrawing = false;
+const wmStage = document.getElementById('wmstage');
+const wmBaseCv = document.getElementById('wmbase');
+const wmViewCv = document.getElementById('wmview');
+const wmRawCv = document.getElementById('wmraw');
+const wmBaseCtx = wmBaseCv.getContext('2d');
+const wmViewCtx = wmViewCv.getContext('2d');
+const wmRawCtx = wmRawCv.getContext('2d');
+function wmRadiusCss(){
+  return Math.max(4, +(document.getElementById('wmbrush').value || 28)) / 2;
+}
+function wmCanvasRadius(){
+  const rect = wmViewCv.getBoundingClientRect();
+  const scale = rect.width ? wmViewCv.width / rect.width : 1;
+  return Math.max(2, wmRadiusCss() * scale);
+}
+function wmDrawStroke(s){
+  const r = s.r, pts = s.points || [];
+  if (!pts.length) return;
+  for (const [ctx, color, alpha] of [[wmRawCtx, '#fff', 1], [wmViewCtx, '#ff4848', .42]]) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = r * 2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+    if (pts.length === 1) {
+      ctx.beginPath(); ctx.arc(pts[0].x, pts[0].y, r, 0, Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+function wmRedrawStrokes(){
+  wmRawCtx.clearRect(0,0,wmRawCv.width,wmRawCv.height);
+  wmViewCtx.clearRect(0,0,wmViewCv.width,wmViewCv.height);
+  wmStrokes.forEach(wmDrawStroke);
+}
+function wmPos(e){
+  const rect = wmViewCv.getBoundingClientRect();
+  const sx = rect.width ? wmViewCv.width / rect.width : 1;
+  const sy = rect.height ? wmViewCv.height / rect.height : 1;
+  return {x: Math.max(0, Math.min(wmViewCv.width, (e.clientX-rect.left)*sx)),
+          y: Math.max(0, Math.min(wmViewCv.height, (e.clientY-rect.top)*sy))};
+}
+function wmFit(){
+  if (!wmImg) return;
+  const box = document.querySelector('#wmpanel .pbox');
+  const maxW = Math.max(320, (box ? box.clientWidth : 900) - 40);
+  const maxH = Math.max(240, Math.min(window.innerHeight * 0.62, 720));
+  const iw = wmImg.naturalWidth || 1, ih = wmImg.naturalHeight || 1;
+  const s = Math.min(1, maxW / iw, maxH / ih);
+  wmStage.style.width = Math.round(iw * s) + 'px';
+  wmStage.style.height = Math.round(ih * s) + 'px';
+}
+function openWatermark(id){
+  const it = itemOf(id);
+  if (!it || it.media !== '图片') { toast('去水印只支持图片'); return; }
+  wmId = id;
+  wmImg = null; wmStrokes = []; wmCur = null; wmDrawing = false;
+  document.getElementById('wmname').textContent = it.name;
+  document.getElementById('wmmsg').textContent = '正在载入图片…';
+  document.getElementById('wmbrushval').textContent = document.getElementById('wmbrush').value + ' px';
+  wmRawCv.width = 1; wmRawCv.height = 1;
+  wmBaseCv.width = 1; wmBaseCv.height = 1; wmViewCv.width = 1; wmViewCv.height = 1;
+  openPanel('wmpanel');
+  const img = new Image();
+  img.onload = () => {
+    wmImg = img;
+    wmBaseCv.width = img.naturalWidth; wmBaseCv.height = img.naturalHeight;
+    wmViewCv.width = img.naturalWidth; wmViewCv.height = img.naturalHeight;
+    wmRawCv.width = img.naturalWidth; wmRawCv.height = img.naturalHeight;
+    wmBaseCtx.clearRect(0,0,wmBaseCv.width,wmBaseCv.height);
+    wmBaseCtx.drawImage(img, 0, 0);
+    wmViewCtx.clearRect(0,0,wmViewCv.width,wmViewCv.height);
+    wmRawCtx.clearRect(0,0,wmRawCv.width,wmRawCv.height);
+    wmFit();
+    document.getElementById('wmmsg').textContent = '用水印处涂满整条水印，再点「去除水印」。只生成副本，原图保留；小面积文字/角标效果最好，复杂纹理会有涂抹感。';
+  };
+  img.onerror = () => {
+    document.getElementById('wmmsg').textContent = '这个图片格式解不出来，暂时不能去水印。';
+    toast('图片载入失败');
+  };
+  img.src = '/api/wm/preview/' + id + '?t=' + Date.now();
+}
+wmViewCv.addEventListener('pointerdown', e => {
+  if (!wmImg) return;
+  e.preventDefault();
+  wmViewCv.setPointerCapture(e.pointerId);
+  wmDrawing = true;
+  const p = wmPos(e);
+  wmCur = {points:[{x:p.x, y:p.y}], r:wmCanvasRadius()};
+  wmStrokes.push(wmCur);
+  wmDrawStroke(wmCur);
+});
+wmViewCv.addEventListener('pointermove', e => {
+  if (!wmDrawing || !wmImg || !wmCur) return;
+  const p = wmPos(e);
+  const last = wmCur.points[wmCur.points.length - 1];
+  if (last && Math.abs(last.x-p.x) + Math.abs(last.y-p.y) < 1) return;
+  wmCur.points.push({x:p.x, y:p.y});
+  // 只重画当前这一笔，避免整张大图每帧重绘
+  wmRawCtx.clearRect(0,0,wmRawCv.width,wmRawCv.height);
+  wmViewCtx.clearRect(0,0,wmViewCv.width,wmViewCv.height);
+  wmStrokes.forEach(wmDrawStroke);
+});
+wmViewCv.addEventListener('pointerup', () => { wmDrawing = false; wmCur = null; });
+wmViewCv.addEventListener('pointercancel', () => { wmDrawing = false; wmCur = null; });
+document.getElementById('wmbrush').oninput = () => {
+  document.getElementById('wmbrushval').textContent = document.getElementById('wmbrush').value + ' px';
+};
+document.getElementById('wmundo').onclick = () => {
+  if (!wmStrokes.length) return;
+  wmStrokes.pop(); wmRedrawStrokes();
+};
+document.getElementById('wmclear').onclick = () => {
+  wmStrokes = []; wmRedrawStrokes();
+};
+document.getElementById('wmrun').onclick = async () => {
+  if (!wmId || !wmImg) { toast('图片还没载入'); return; }
+  if (!wmStrokes.length) { toast('先用画笔把水印涂满'); return; }
+  const btn = document.getElementById('wmrun');
+  btn.disabled = true;
+  document.getElementById('wmmsg').textContent = '正在本地修复，图片大时可能要几秒…';
+  const r = await fetch('/api/watermark/remove', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id:wmId, mask:wmRawCv.toDataURL('image/png'), radius:4})})
+    .then(x=>x.json()).catch(()=>({ok:false,msg:'请求失败'}));
+  btn.disabled = false;
+  if (!r.ok) { document.getElementById('wmmsg').textContent = r.msg || '去水印失败'; toast(r.msg || '去水印失败'); return; }
+  toast('已生成 ' + r.name);
+  closePanel('wmpanel');
+  loadFacets();
+  if (S.view === 'grid') resetAndLoad(); else showAlbums();
+};
+window.addEventListener('resize', () => { if (document.getElementById('wmpanel').classList.contains('on')) wmFit(); });
 
 /* ---------- 内容索引 ---------- */
 let contentTimer = null;

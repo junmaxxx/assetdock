@@ -28,6 +28,11 @@ import urllib.request
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote
 
+try:
+    import imagesize  # 只读文件头拿宽高，比 Pillow 解码快很多；装不上就回退 Pillow
+except Exception:
+    imagesize = None
+
 if getattr(sys, 'frozen', False):
     # 打包成 exe 后，数据目录跟着 exe 所在文件夹走（便携式，拷到哪台机器都能用）
     BASE = os.path.dirname(os.path.abspath(sys.executable))
@@ -331,6 +336,7 @@ def connect():
             'content_state': 'INTEGER DEFAULT 0',
             'hash_mtime': 'INTEGER DEFAULT 0',
             'content_mtime': 'INTEGER DEFAULT 0',
+            'meta_state': 'INTEGER DEFAULT 0',
         }
         for name, ddl in extra.items():
             if name not in cols:
@@ -338,6 +344,7 @@ def connect():
         con.execute('CREATE INDEX IF NOT EXISTS idx_sub ON items(sub)')
         con.execute('CREATE INDEX IF NOT EXISTS idx_sha ON items(sha)')
         con.execute('CREATE INDEX IF NOT EXISTS idx_size ON items(size)')
+        con.execute('CREATE INDEX IF NOT EXISTS idx_meta_state ON items(media, meta_state)')
         con.commit()
         _MIGRATED = True
     return con
@@ -368,6 +375,7 @@ CREATE TABLE IF NOT EXISTS items(
   content_state INTEGER DEFAULT 0,
   hash_mtime INTEGER DEFAULT 0,
   content_mtime INTEGER DEFAULT 0,
+  meta_state INTEGER DEFAULT 0,
   seen_run INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_media ON items(media);
@@ -480,7 +488,12 @@ def do_scan(full=False):
             'VALUES(?,?,?,?,?,?,?,?,?,?) '
             'ON CONFLICT(path) DO UPDATE SET name=excluded.name, ext=excluded.ext, media=excluded.media, '
             'size=excluded.size, mtime=excluded.mtime, loc=excluded.loc, cat=excluded.cat, '
-            'sub=excluded.sub, seen_run=excluded.seen_run',
+            'sub=excluded.sub, seen_run=excluded.seen_run, '
+            'w=CASE WHEN items.mtime<>excluded.mtime OR items.size<>excluded.size THEN NULL ELSE items.w END, '
+            'h=CASE WHEN items.mtime<>excluded.mtime OR items.size<>excluded.size THEN NULL ELSE items.h END, '
+            'alpha=CASE WHEN items.mtime<>excluded.mtime OR items.size<>excluded.size THEN 0 ELSE items.alpha END, '
+            'dur=CASE WHEN items.mtime<>excluded.mtime OR items.size<>excluded.size THEN 0 ELSE items.dur END, '
+            'meta_state=CASE WHEN items.mtime<>excluded.mtime OR items.size<>excluded.size THEN 0 ELSE items.meta_state END',
             batch)
         con.commit()
         batch.clear()
@@ -557,6 +570,10 @@ def do_scan(full=False):
     bump_data()
     set_progress(phase='ready', scanned=scanned, total_db=total_now, msg='索引完成')
     print('扫描完成：命中 %d 个媒体文件，新增 %d，更新 %d，用时 %.0f 秒' % (scanned, added, updated, time.time() - t0))
+    try:
+        start_meta_index()
+    except Exception:
+        pass
 
 
 # ---------------- 缩略图 ----------------
@@ -793,6 +810,114 @@ def image_size(path):
             return im.size
     except Exception:
         return (None, None)
+
+
+# ---------------- 尺寸 / 透明 / 时长补建 ----------------
+# 属性筛选（方图/竖图/透明底/短视频）依赖 items.w/h/alpha/dur。
+# 旧索引这些字段是空的，新扫描也不会主动解码，所以放到后台低优先级补建。
+META_JOB = {'running': False, 'phase': 'idle', 'done': 0, 'total': 0,
+            'images': 0, 'videos': 0, 'msg': ''}
+META_START_LOCK = threading.Lock()
+ALPHA_EXT = {'.png', '.webp', '.gif', '.tif', '.tiff', '.psd', '.ico',
+             '.avif', '.heic', '.heif', '.jxl', '.svg'}
+
+
+def _alpha_of(path, ext):
+    """只对可能带透明通道的格式开一次 Pillow，JPEG/BMP 直接跳过。"""
+    if ext == '.svg':
+        return 1
+    if ext not in ALPHA_EXT:
+        return 0
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            return 1 if (im.mode in ('RGBA', 'LA', 'PA') or 'transparency' in im.info) else 0
+    except Exception:
+        return 0
+
+
+def _image_metadata(path, ext):
+    """返回 (w,h,alpha)。优先 imagesize 读文件头，失败再退回 Pillow。"""
+    w = h = 0
+    if imagesize is not None:
+        try:
+            w, h = imagesize.get(path)
+        except Exception:
+            w = h = 0
+    if (not w or not h or w < 0 or h < 0):
+        try:
+            from PIL import Image
+            with Image.open(path) as im:
+                w, h = im.size
+        except Exception:
+            w = h = 0
+    return int(w or 0), int(h or 0), _alpha_of(path, ext)
+
+
+def meta_pending():
+    con = connect()
+    try:
+        img = con.execute("SELECT COUNT(*) FROM items WHERE media='图片' AND meta_state=0").fetchone()[0]
+        vid = con.execute("SELECT COUNT(*) FROM items WHERE media='视频' AND meta_state=0").fetchone()[0]
+    finally:
+        con.close()
+    return img, vid
+
+
+def start_meta_index():
+    """后台补建尺寸/透明/时长；已经跑或没有待补数据就返回 False。"""
+    with META_START_LOCK:
+        if META_JOB.get('running'):
+            return False
+        img, vid = meta_pending()
+        if img + vid <= 0:
+            META_JOB.update(images=0, videos=0, total=0, done=0, phase='ready', msg='无需补建')
+            return False
+        META_JOB.update(running=True, phase='准备', done=0, total=img + vid,
+                        images=img, videos=vid, msg='正在补建尺寸/透明/时长')
+    threading.Thread(target=_meta_worker, daemon=True).start()
+    return True
+
+
+def _meta_worker():
+    _low_priority()
+    done = 0
+    try:
+        while True:
+            con = connect()
+            rows = con.execute(
+                "SELECT id,path,ext,media FROM items WHERE meta_state=0 "
+                "AND media IN ('图片','视频') ORDER BY media LIMIT 60").fetchall()
+            if not rows:
+                con.close()
+                break
+            for item_id, path, ext, media in rows:
+                if media == '图片':
+                    w, h, alpha = _image_metadata(path, (ext or '').lower())
+                    if w and h:
+                        con.execute('UPDATE items SET w=?,h=?,alpha=?,meta_state=1 WHERE id=?',
+                                    (w, h, alpha, item_id))
+                    else:
+                        con.execute('UPDATE items SET meta_state=2 WHERE id=?', (item_id,))
+                else:
+                    dur, _vc = _probe_video(path)
+                    if dur and dur > 0:
+                        con.execute('UPDATE items SET dur=?,meta_state=1 WHERE id=?',
+                                    (float(dur), item_id))
+                    else:
+                        con.execute('UPDATE items SET meta_state=2 WHERE id=?', (item_id,))
+            con.commit()
+            con.close()
+            done += len(rows)
+            META_JOB.update(done=done, total=max(META_JOB.get('total', 0), done),
+                            msg='已补建 %d 项' % done)
+        bump_data()
+        META_JOB.update(running=False, phase='ready', done=done, total=done,
+                        images=0, videos=0, msg='尺寸/透明/时长补建完成')
+        print('媒体属性补建完成：%d 项' % done)
+    except Exception as e:
+        META_JOB.update(running=False, phase='error', msg=str(e))
+        print('媒体属性补建失败：%s' % e)
 
 
 def _filter(p):
@@ -1109,7 +1234,8 @@ def trash_one(con, item_id, batch, now):
         con.execute('DELETE FROM items WHERE id=?', (item_id,))
         con.execute('DELETE FROM item_tags WHERE item_id=?', (item_id,))
         con.execute('DELETE FROM fav WHERE item_id=?', (item_id,))
-        return {'id': item_id, 'ok': False, 'name': name, 'msg': '文件已不在原位，已清掉索引'}
+        return {'id': item_id, 'ok': False, 'cleaned': True, 'name': name,
+                'msg': '文件已不在原位，已清掉索引'}
     tags, fav = _snapshot_links(con, item_id)
     day = time.strftime('%Y%m%d', time.localtime(now))
     destdir = os.path.join(TRASH_DIR, day, batch)
@@ -1144,9 +1270,11 @@ def api_trash_add(self, ids_s):
         (moved if r.get('ok') else failed).append(r)
     con.commit()
     con.close()
-    if moved:
+    cleaned = sum(1 for r in failed if r.get('cleaned'))
+    if moved or cleaned:
         bump_data()
-    self._json({'ok': True, 'moved': len(moved), 'failed': failed, 'batch': batch,
+    self._json({'ok': bool(moved or cleaned), 'moved': len(moved), 'cleaned': cleaned,
+                'failed': failed, 'batch': batch,
                 'names': [m.get('name') for m in moved],
                 'bytes': sum((m.get('size') or 0) for m in moved)})
 
@@ -1925,13 +2053,22 @@ def api_batch_rename(self, ids_s, pattern, start=1):
             continue
         st = os.stat(target)
         n_ext = os.path.splitext(target)[1].lower()
-        con.execute('UPDATE items SET path=?,name=?,ext=?,size=?,mtime=?,cat=?,sub=? WHERE id=?',
-                    (target, os.path.basename(target), n_ext, st.st_size, int(st.st_mtime),
-                     guess_cat(target, media_of(n_ext)), sub_of(target, media_of(n_ext)), item_id))
+        old_media = media_of(ext)
+        new_media = media_of(n_ext)
+        if new_media != old_media:
+            con.execute('UPDATE items SET path=?,name=?,ext=?,media=?,size=?,mtime=?,cat=?,sub=?,'
+                        'w=NULL,h=NULL,alpha=0,dur=0,phash=\'\',hash_mtime=0,meta_state=0 WHERE id=?',
+                        (target, os.path.basename(target), n_ext, new_media, st.st_size, int(st.st_mtime),
+                         guess_cat(target, new_media), sub_of(target, new_media), item_id))
+        else:
+            con.execute('UPDATE items SET path=?,name=?,ext=?,size=?,mtime=?,cat=?,sub=? WHERE id=?',
+                        (target, os.path.basename(target), n_ext, st.st_size, int(st.st_mtime),
+                         guess_cat(target, new_media), sub_of(target, new_media), item_id))
         done.append({'id': item_id, 'name': os.path.basename(target)})
     con.commit(); con.close()
     if done:
         bump_data()
+        start_meta_index()
     self._json({'ok': True, 'renamed': len(done), 'failed': failed, 'names': [d['name'] for d in done]})
 
 
@@ -2270,7 +2407,7 @@ class Handler(BaseHTTPRequestHandler):
                 'disks': [{'k': k, 'n': n} for k, n in disks if k and k[0].isalpha() and k[1] == ':'],
                 'subs': [{'cat': c, 'k': s, 'n': n} for c, s, n in subs],
                 'tags': [{'name': k, 'n': n} for k, n in tags], 'fav': favs,
-                'trash': _trash_count()}
+                'trash': _trash_count(), 'meta': META_JOB}
         _STATS_CACHE[key] = data
         self._json(data)
 
@@ -2696,12 +2833,22 @@ def api_rename(self, item_id, new_name):
         return
     st = os.stat(target)
     n_ext = os.path.splitext(new_name)[1].lower()
+    old_media = media_of(ext)
+    new_media = media_of(n_ext)
     con = connect()
-    con.execute('UPDATE items SET path=?, name=?, ext=?, size=?, mtime=?, cat=?, sub=?, w=NULL, h=NULL WHERE id=?',
-                (target, new_name, n_ext, st.st_size, int(st.st_mtime),
-                 guess_cat(target, media_of(n_ext)), sub_of(target, media_of(n_ext)), item_id))
+    if new_media != old_media:
+        con.execute('UPDATE items SET path=?, name=?, ext=?, media=?, size=?, mtime=?, cat=?, sub=?, '
+                    'w=NULL, h=NULL, alpha=0, dur=0, phash=\'\', hash_mtime=0, meta_state=0 WHERE id=?',
+                    (target, new_name, n_ext, new_media, st.st_size, int(st.st_mtime),
+                     guess_cat(target, new_media), sub_of(target, new_media), item_id))
+    else:
+        con.execute('UPDATE items SET path=?, name=?, ext=?, size=?, mtime=?, cat=?, sub=? WHERE id=?',
+                    (target, new_name, n_ext, st.st_size, int(st.st_mtime),
+                     guess_cat(target, new_media), sub_of(target, new_media), item_id))
     con.commit(); con.close()
     bump_data()
+    if new_media in ('图片', '视频'):
+        start_meta_index()
     self._json({'ok': True, 'msg': '已重命名为 ' + new_name, 'name': new_name, 'path': target})
 
 
@@ -2815,6 +2962,7 @@ def start_http(quiet=False, defer_scan=False):
         pass
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     threading.Thread(target=auto_scan_loop, daemon=True).start()
+    start_meta_index()
     if need:
         set_progress(phase='scan', scanned=0, roots=0, ri=0, root='',
                      t0=time.time(), total_db=0, msg='正在准备扫描…')

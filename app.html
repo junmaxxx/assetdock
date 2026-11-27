@@ -374,7 +374,7 @@
   <span>Ctrl+滚轮 缩放界面</span>
   <span>Ctrl+Alt+Space 唤起搜索</span>
   <span>后台每 15 分钟自动补扫，新素材自动出现</span>
-  <span style="margin-left:auto;color:#3f4657">素材坞 v1.6.4 · 本地运行</span>
+  <span style="margin-left:auto;color:#3f4657">素材坞 v1.6.5 · 本地运行</span>
 </footer>
 
 <div id="batchbar">
@@ -540,7 +540,7 @@ const S = {view:'albums', type:'全部', cat:'全部', loc:'全部', disk:'', su
            lastMonth:'', title:'全部素材', items:[]};
 let ALB = [];
 let SUBS = [];
-let FACETS = {tags:[], fav:0, trash:0};
+let FACETS = {tags:[], fav:0, trash:0, meta:{}};
 const grid = document.getElementById('grid');
 const more = document.getElementById('more');
 const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -600,6 +600,12 @@ document.getElementById('tagchips').addEventListener('click', e => {
   else if (b.dataset.prop === 'orient') S.orient = S.orient === b.dataset.v ? '' : b.dataset.v;
   else if (b.dataset.prop === 'alpha') S.alpha = S.alpha ? '' : '1';
   else if (b.dataset.prop === 'durmax') S.durmax = S.durmax ? '' : b.dataset.v;
+  if (b.dataset.prop) {
+    const meta = FACETS.meta || {};
+    if ((meta.pending_images || 0) + (meta.pending_videos || 0) > 0) {
+      toast('属性索引还在后台补建，结果可能不全');
+    }
+  }
   S.title = S.tag ? ('#' + S.tag) : (S.fav ? '★ 我的收藏' : (S.orient || S.alpha || S.durmax ? '属性筛选' : S.title));
   showGrid(); refreshChips(); renderTagChips(); resetAndLoad();
 });
@@ -748,7 +754,8 @@ async function deleteSelected(){
   try {
     const r = await fetch('/api/trash/add?ids=' + ids.join(','), {method:'POST'}).then(x => x.json());
     if (r.ok) {
-      toast('已移入待删除箱：' + r.moved + ' 个 · Ctrl+Z 撤销');
+      toast(r.moved > 0 ? ('已移入待删除箱：' + r.moved + ' 个 · Ctrl+Z 撤销')
+                       : ('已清掉失效索引 ' + (r.cleaned || 0) + ' 条'));
       selSet.clear(); batchMode = false; paintSel();
       loadFacets();
       if (S.view === 'grid') resetAndLoad(); else showAlbums();
@@ -780,6 +787,7 @@ document.getElementById('q').addEventListener('input', e => {
 
 function resetAndLoad(){
   S.offset = 0; S.end = false; S.seq++; S.lastMonth = ''; S.items = [];
+  S.loading = false;
   const _v = document.getElementById('vw');
   if (_v) _v.classList.remove('on');
   grid.innerHTML = ''; more.textContent = '正在加载…';
@@ -826,7 +834,15 @@ async function loadMore(){
     S.items = S.items.concat(r.items);
     if (!r.items.length) {
       S.end = true;
-      if (S.offset === 0) grid.innerHTML = '<div class="empty"><h2>这里还没有素材</h2><p>换个分类、关键词，或回到相册换个封面。</p></div>';
+      if (S.offset === 0) {
+        const meta = FACETS.meta || {};
+        const pending = (meta.pending_images || 0) + (meta.pending_videos || 0);
+        if (pending && (S.orient || S.alpha || S.durmax)) {
+          grid.innerHTML = '<div class="empty"><h2>正在补建属性索引</h2><p>尺寸、透明底和视频时长还在后台读取，约一两分钟后这个筛选就有结果。</p></div>';
+        } else {
+          grid.innerHTML = '<div class="empty"><h2>这里还没有素材</h2><p>换个分类、关键词，或回到相册换个封面。</p></div>';
+        }
+      }
       more.textContent = '';
     } else {
       if (S.sort === 'time') {
@@ -857,9 +873,9 @@ async function loadMore(){
     }
     document.getElementById('gtitle').innerHTML = esc(S.title) + '<s>' + num(S.total) + ' 个</s>';
   } catch(e) {
-    more.textContent = '加载失败：' + e.message;
+    if (seq === S.seq) more.textContent = '加载失败：' + e.message;
   } finally {
-    S.loading = false;
+    if (seq === S.seq) S.loading = false;
   }
 }
 
@@ -1265,6 +1281,7 @@ async function renameItem(id){
   if (vId === id) document.getElementById('vname').textContent = r.name;
   toast('已重命名为 ' + r.name);
   loadFacets();
+  if (S.view === 'grid') resetAndLoad();
 }
 
 async function deleteItem(id){
@@ -1274,9 +1291,13 @@ async function deleteItem(id){
   const r = await fetch('/api/trash/add?ids=' + id, {method:'POST'}).then(r=>r.json()).catch(()=>({ok:false,msg:'请求失败'}));
   if (!r.ok) { toast('删除失败：' + (r.msg||'')); return; }
   S.items = S.items.filter(x => x.id !== id);
+  S.total = Math.max(0, (S.total || 0) - 1);
+  S.offset = Math.max(0, S.offset - 1);
+  selSet.delete(id);
   const c = cardNode(id); if (c) c.remove();
   if (vId === id) { const b = document.getElementById('vclose'); if (b) b.click(); }
-  toast('已移入待删除箱 · Ctrl+Z 撤销');
+  document.getElementById('gtitle').innerHTML = esc(S.title) + '<s>' + num(S.total) + ' 个</s>';
+  toast(r.moved > 0 ? '已移入待删除箱 · Ctrl+Z 撤销' : ('已清掉失效索引 ' + (r.cleaned || 0) + ' 条'));
   loadFacets();
 }
 function showCtx(id, x, y){
@@ -1561,7 +1582,7 @@ async function cleanGroup(g){
   if (!ok) return;
   const r = await fetch('/api/trash/add?ids='+ids.join(','), {method:'POST'}).then(x=>x.json());
   toast(r.ok ? ('已清理 '+r.moved+' 个 · 释放约 '+kb(r.bytes||0)+' · Ctrl+Z 撤销') : (r.msg||'清理失败'));
-  if (r.ok) { loadDupes(); loadFacets(); }
+  if (r.ok) { loadDupes(); loadFacets(); if (S.view === 'grid') resetAndLoad(); else showAlbums(); }
 }
 document.querySelectorAll('.dt').forEach(b => b.onclick = () => {
   dupTab = b.dataset.t; document.querySelectorAll('.dt').forEach(x=>x.classList.toggle('on', x===b)); paintDupes();
@@ -1584,7 +1605,7 @@ document.getElementById('dupe-clean').onclick = async () => {
   if (!ok) return;
   const r = await fetch('/api/trash/add?ids='+all.join(','), {method:'POST'}).then(x=>x.json());
   toast(r.ok ? ('已清理 '+r.moved+' 个 · 释放约 '+kb(r.bytes||0)+' · Ctrl+Z 撤销') : (r.msg||'清理失败'));
-  if (r.ok) { loadDupes(); loadFacets(); }
+  if (r.ok) { loadDupes(); loadFacets(); if (S.view === 'grid') resetAndLoad(); else showAlbums(); }
 };
 
 /* ---------- 批量整理 ---------- */

@@ -8,6 +8,7 @@ python-pptx>=1.0
 comtypes>=1.4
 opencv-python-headless>=4.10
 numpy>=2.0
+certifi>=2024.0
 winrt-runtime>=3.0; sys_platform == "win32"
 winrt-Windows.Media.Ocr>=3.0; sys_platform == "win32"
 winrt-Windows.Graphics.Imaging>=3.0; sys_platform == "win32"

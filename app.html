@@ -327,15 +327,44 @@
   .tagbox .none{color:#606879;font-size:12px}
   .opsec{border-top:1px dashed rgba(70,80,105,.55);padding-top:4px;margin-top:10px}
   .opsec:first-of-type{border-top:0}
-  .wmstage{position:relative;margin:10px auto 0;background:#0b0d12;border:1px solid rgba(62,72,94,.7);
-    border-radius:10px;overflow:hidden;max-width:100%;min-height:220px}
-  .wmstage canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
-  #wmview{cursor:crosshair;touch-action:none}
-  #wmbase{pointer-events:none}
+  .wmcompare{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+  .wmbox{min-width:0;background:#0b0d12;border:1px solid rgba(62,72,94,.7);border-radius:10px;padding:7px}
+  .wmbox span{display:block;font-size:10.5px;color:#7f879a;margin-bottom:5px}
+  .wmbox img{display:block;width:100%;height:42vh;object-fit:contain;background:#0b0d12}
   .cfrow{padding:7px 2px;border-bottom:1px solid rgba(60,70,92,.3);font-size:12px;color:#cfd6e6;
     display:flex;gap:8px;align-items:center}
   .cfrow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .cfrow .sz{color:#8f98ad;font-size:11px;white-space:nowrap}
+
+  /* v1.7 资源搜索 */
+  .pbox.full{width:min(1240px,97vw);max-height:92vh}
+  .dstabs{display:flex;gap:8px;border-bottom:1px solid rgba(70,80,105,.45);padding-bottom:8px;margin-bottom:4px}
+  .dst{background:transparent;border:0;color:#8b93a8;font-size:13px;padding:7px 13px;cursor:pointer;border-radius:8px}
+  .dst.on{color:#fff;background:rgba(139,108,255,.18)}
+  .dsq{flex:1;min-width:200px}
+  .dchip{background:rgba(20,24,33,.7);border:1px solid var(--line2);color:#a9b2c4;
+    border-radius:999px;padding:5px 12px;font-size:11.5px;cursor:pointer}
+  .dchip.on{border-color:rgba(139,125,255,.85);color:#fff;background:rgba(139,108,255,.16)}
+  .dsgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(176px,1fr));gap:11px;
+    max-height:54vh;overflow:auto;margin-top:10px;padding:2px}
+  .dscard{background:rgba(20,24,33,.72);border:1px solid rgba(60,70,92,.6);border-radius:11px;
+    overflow:hidden;cursor:pointer}
+  .dscard:hover{border-color:rgba(139,125,255,.75);background:rgba(139,108,255,.08)}
+  .dsimg{height:118px;background:#0b0d12;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .dsimg img{width:100%;height:100%;object-fit:cover;display:block}
+  .dsimg .ph{font-size:26px;color:#7c8498}
+  .dsbody{padding:8px 9px 10px}
+  .dsbody b{display:block;font-size:12px;color:#e7ecf6;line-height:1.45;max-height:3.1em;overflow:hidden}
+  .dsbody span{display:block;font-size:10.5px;color:#7f879a;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dsacts{display:flex;gap:6px;margin-top:7px}
+  .dsacts button{flex:1;background:rgba(26,31,43,.9);border:1px solid var(--line2);color:#dfe5f2;
+    border-radius:7px;padding:4px 8px;font-size:10.5px;cursor:pointer}
+  .dsacts button:hover{border-color:rgba(139,125,255,.7)}
+  .dspreview{z-index:125}
+  .dsp_media{min-height:220px;max-height:48vh;background:#0b0d12;border:1px solid rgba(62,72,94,.7);
+    border-radius:10px;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .dsp_media img{max-width:100%;max-height:48vh;object-fit:contain;display:block}
+  .dsp_media .ph{font-size:38px;color:#6f778b}
 </style>
 </head>
 <body>
@@ -383,7 +412,7 @@
   <span>Ctrl+滚轮 缩放界面</span>
   <span>Ctrl+Alt+Space 唤起搜索</span>
   <span>后台每 15 分钟自动补扫，新素材自动出现</span>
-  <span style="margin-left:auto;color:#3f4657">素材坞 v1.6.6 · 本地运行</span>
+  <span style="margin-left:auto;color:#3f4657">素材坞 v1.7.0 · 本地运行</span>
 </footer>
 
 <div id="batchbar">
@@ -456,11 +485,12 @@
   <div class="pbox narrow">
     <div class="phead"><b>工具与维护</b><button class="pclose" data-close="toolpanel">✕</button></div>
     <div class="toolgrid">
+      <button class="tool" id="open-discover"><span class="ti">◎</span><span><b>资源搜索</b><em>公开源聚合 + 站点嗅探 + 隔离下载</em></span></button>
       <button class="tool" id="open-trash"><span class="ti">🗑</span><span><b>待删除箱</b><em id="trashcnt">0 项 · 可还原</em></span></button>
       <button class="tool" id="open-dupe"><span class="ti">⧉</span><span><b>重复与相似</b><em>清理占空间的重复图</em></span></button>
       <button class="tool" id="open-content"><span class="ti">⌕</span><span><b>内容索引</b><em>OCR 截图、PDF 正文</em></span></button>
       <button class="tool" id="open-convert"><span class="ti">⇄</span><span><b>格式转换</b><em>PPT / PDF / 图片 互转</em></span></button>
-      <button class="tool" id="open-wm"><span class="ti">✎</span><span><b>图片去水印</b><em>涂抹水印后本地补背景</em></span></button>
+      <button class="tool" id="open-wm"><span class="ti">✎</span><span><b>一键去水印</b><em>自动识别文字/角标，本地补背景</em></span></button>
     </div>
     <div class="toolsec" id="contentsec">
       <div class="tsh">内容索引 <span id="ocrstat" class="mini"></span></div>
@@ -476,6 +506,66 @@
       <div class="tsh">快捷操作</div>
       <div class="mini hot">Ctrl+Alt+Space 唤起窗口并聚焦搜索<br>Ctrl+滚轮 缩放界面 · 右键卡片看更多</div>
     </div>
+  </div>
+</div>
+
+<!-- 资源搜索 -->
+<div id="discoverpanel" class="panel">
+  <div class="pbox full">
+    <div class="phead"><b>资源搜索</b><span class="mini" id="dsstat">搜公开可访问资源，下载先隔离校验</span><button class="pclose" data-close="discoverpanel">✕</button></div>
+    <div class="dstabs">
+      <button class="dst on" data-mode="search">聚合搜索</button>
+      <button class="dst" data-mode="site">站点嗅探</button>
+    </div>
+    <div id="dssearch">
+      <div class="trow">
+        <input id="dsq" class="ipt dsq" placeholder="关键词，例如 小猫 / 蛋糕 / 蒸汽波 / 论文" spellcheck="false">
+        <button class="ghost" id="dsgo">搜索</button>
+      </div>
+      <div class="trow" id="dskindrow">
+        <span class="mini">类型</span>
+        <button class="dchip on" data-kind="all">全部</button>
+        <button class="dchip" data-kind="image">图片</button>
+        <button class="dchip" data-kind="video">视频</button>
+        <button class="dchip" data-kind="audio">音频</button>
+        <button class="dchip" data-kind="doc">文档</button>
+      </div>
+      <div class="trow" id="dssourcerow"><span class="mini">来源</span></div>
+      <div class="mini">Bing 图片覆盖广但版权未知；arXiv / OpenAlex 是开放论文。视频和音频请用「站点嗅探」。Google 在当前网络不可达，未接入。</div>
+    </div>
+    <div id="dssite" style="display:none">
+      <div class="trow">
+        <input id="dssiteurl" class="ipt dsq" placeholder="个人站 / 博客地址，例如 https://example.com/gallery" spellcheck="false">
+      </div>
+      <div class="trow">
+        <input id="dssiteq" class="ipt" placeholder="站内关键词（可留空）" spellcheck="false">
+        <select id="dspages" class="sel">
+          <option value="3">最多 3 页</option>
+          <option value="5" selected>最多 5 页</option>
+          <option value="8">最多 8 页</option>
+        </select>
+        <button class="ghost" id="dssitego">开始嗅探</button>
+      </div>
+      <div class="mini">只读 robots.txt 允许的公开页面，同域限速抓取；不绕过登录、验证码、付费墙、防盗链。个人站资源默认有版权，下载前请确认授权。</div>
+    </div>
+    <div class="prog"><i id="dsprog"></i></div>
+    <div class="mini" id="dsmsg">输入关键词开始搜索。</div>
+    <div class="dsgrid" id="dsresults"></div>
+  </div>
+</div>
+
+<!-- 资源预览 / 下载 -->
+<div id="dspreview" class="panel dspreview">
+  <div class="pbox">
+    <div class="phead"><b id="dsp_title">资源预览</b><span class="mini" id="dsp_src"></span><button class="pclose" data-close="dspreview">✕</button></div>
+    <div class="dsp_media" id="dsp_media"></div>
+    <div class="mini" id="dsp_meta" style="margin-top:9px"></div>
+    <div class="trow" style="margin-top:12px">
+      <button class="ghost" id="dsp_dl">下载并校验</button>
+      <button class="ghost" id="dsp_ingest" style="display:none">确认入库</button>
+      <span class="mini" id="dsp_status"></span>
+    </div>
+    <div class="prog"><i id="dsp_bar"></i></div>
   </div>
 </div>
 
@@ -562,23 +652,27 @@
   </div>
 </div>
 
-<!-- 图片去水印 -->
+<!-- 一键去水印 -->
 <div id="wmpanel" class="panel">
   <div class="pbox wide">
-    <div class="phead"><b>图片去水印</b><span class="mini" id="wmname"></span><button class="pclose" data-close="wmpanel">✕</button></div>
+    <div class="phead"><b>一键去水印</b><span class="mini" id="wmname"></span><button class="pclose" data-close="wmpanel">✕</button></div>
     <div class="trow">
-      <span class="mini">笔刷</span><input type="range" id="wmbrush" min="8" max="120" value="28" step="2" style="width:150px">
-      <span class="mini" id="wmbrushval">28 px</span>
-      <button class="ghost" id="wmundo">撤销一笔</button>
-      <button class="ghost" id="wmclear">清空</button>
-      <button class="ghost" id="wmrun">去除水印</button>
+      <span class="mini">识别强度</span>
+      <select id="wmstrength" class="sel">
+        <option value="1">1 · 保守，只处理最明显的</option>
+        <option value="2">2 · 偏保守</option>
+        <option value="3" selected>3 · 推荐</option>
+        <option value="4">4 · 激进</option>
+        <option value="5">5 · 最强，可能误伤</option>
+      </select>
+      <button class="ghost" id="wmrun">一键去水印</button>
+      <button class="ghost" id="wmreveal" style="display:none">打开结果所在位置</button>
     </div>
-    <div class="wmstage" id="wmstage">
-      <canvas id="wmbase"></canvas>
-      <canvas id="wmview"></canvas>
-      <canvas id="wmraw" style="display:none"></canvas>
+    <div class="wmcompare">
+      <div class="wmbox"><span>原图</span><img id="wmorig" alt=""></div>
+      <div class="wmbox"><span>处理后</span><img id="wmresult" alt=""></div>
     </div>
-    <div class="mini" id="wmmsg" style="margin-top:8px">用水印处涂满整条水印，再点「去除水印」。只生成副本，原图保留；小面积文字/角标效果最好，复杂纹理会有涂抹感。</div>
+    <div class="mini" id="wmmsg" style="margin-top:8px">自动识别浅色文字和角标后本地补背景，不用涂抹。只生成副本，原图保留；复杂彩色 logo 或大面积纹理可能识别不到。</div>
   </div>
 </div>
 
@@ -1365,7 +1459,7 @@ function showCtx(id, x, y){
     [it.media === '图片' ? '查看图片（内置查看器）' : (it.media === '文档' ? '查看封面' : '播放'), '双击', () => openItem(id)],
     ['用系统程序打开', '', () => act('open', id)],
     ...((it.media === '视频' || it.media === '音频') ? [['用内置播放器打开', '全编码 mpv', () => mpvPlay(id)]] : []),
-    ...(it.media === '图片' ? [['去水印…', '涂抹水印区域后本地补背景', () => openWatermark(id)]] : []),
+    ...(it.media === '图片' ? [['去水印…', '自动识别文字/角标后本地补背景', () => openWatermark(id)]] : []),
     ...((it.media === '图片' || it.media === '文档') ? [['转换格式…', 'PPT / PDF / 图片', () => openConvert(id)]] : []),
     ['打开文件所在位置', '', () => act('reveal', id)],
     ['-'],
@@ -1496,6 +1590,7 @@ document.getElementById('open-wm').onclick = () => {
   if (!id) { toast('先在网格里选中一张图片'); return; }
   openWatermark(id);
 };
+document.getElementById('open-discover').onclick = () => openDiscover();
 
 function patchItem(id, fn){
   const it = itemOf(id);
@@ -1719,6 +1814,221 @@ document.getElementById('cvbtn').onclick = async () => {
   if (r.ok) { closePanel('opsdlg'); loadFacets(); resetAndLoad(); }
 };
 
+/* ---------- 资源搜索 ---------- */
+let DISC = {mode:'search', kind:'all', sources:new Set(), srcLoaded:false, items:[], cur:null,
+            quarantine:null, downloading:false, timer:null};
+function discUrl(url){ return '/api/discover/thumb?url=' + encodeURIComponent(url || ''); }
+function discKindText(k){ return ({'图片':'图片','视频':'视频','音频':'音频','文档':'文档'})[k] || k || '资源'; }
+function discIco(k){ return k === '图片' ? '🖼' : k === '视频' ? '🎬' : k === '音频' ? '🎵' : '📄'; }
+async function loadDiscSources(){
+  const box = document.getElementById('dssourcerow');
+  let r = null;
+  try { r = await fetch('/api/discover/sources').then(x=>x.json()); } catch(e) {}
+  const srcs = (r && r.sources) || [{key:'bing',name:'Bing 图片'},{key:'arxiv',name:'arXiv'},{key:'openalex',name:'OpenAlex'}];
+  DISC.sources = new Set(srcs.map(x=>x.key));
+  box.innerHTML = '<span class="mini">来源</span>' + srcs.map(x =>
+    '<button class="dchip on" data-source="'+esc(x.key)+'" title="'+esc(x.note||'')+'">'+esc(x.name)+'</button>').join('');
+  box.querySelectorAll('[data-source]').forEach(b => b.onclick = () => {
+    const k = b.dataset.source;
+    if (DISC.sources.has(k)) DISC.sources.delete(k); else DISC.sources.add(k);
+    b.classList.toggle('on', DISC.sources.has(k));
+  });
+  DISC.srcLoaded = true;
+}
+function discSetMode(mode){
+  DISC.mode = mode;
+  document.querySelectorAll('.dst').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+  document.getElementById('dssearch').style.display = mode === 'search' ? '' : 'none';
+  document.getElementById('dssite').style.display = mode === 'site' ? '' : 'none';
+  document.getElementById('dsmsg').textContent = mode === 'search'
+    ? '输入关键词开始搜索。' : '输入站点地址，抓取公开页面里的媒体直链。';
+}
+function openDiscover(){
+  if (!DISC.srcLoaded) loadDiscSources();
+  openPanel('discoverpanel');
+  setTimeout(() => document.getElementById('dsq').focus(), 80);
+}
+function discCard(it, i){
+  const thumb = it.thumb || (it.kind === '图片' ? it.url : '');
+  const fallback = it.url ? discUrl(it.url) : '';
+  const media = thumb
+    ? '<img loading="lazy" src="'+discUrl(thumb)+'" alt="" onerror="if(this.dataset.f){this.style.display=\'none\'}else{this.dataset.f=1;this.src=\''+fallback+'\'}">'
+    : '<span class="ph">'+discIco(it.kind)+'</span>';
+  return '<div class="dscard" data-di="'+i+'"><div class="dsimg">'+media+'</div><div class="dsbody">'+
+    '<b title="'+esc(it.name)+'">'+esc(it.name || '未命名资源')+'</b>'+
+    '<span title="'+esc(it.source)+' · '+esc(it.license)+'">'+esc(it.source || '资源')+' · '+discKindText(it.kind)+' · '+esc(it.license || '版权未知')+'</span>'+
+    '<div class="dsacts"><button data-prev="'+i+'">预览</button><button data-dl="'+i+'">下载</button></div></div></div>';
+}
+function discPaint(j){
+  const items = j.items || [];
+  DISC.items = items;
+  const results = document.getElementById('dsresults');
+  const st = (j.status || []).map(x => x.source + ' ' + x.count + (x.error ? ('（' + x.error + '）') : '')).join(' · ');
+  const total = j.total != null ? j.total : items.length;
+  document.getElementById('dsstat').textContent = '共 ' + total + ' 项' + (st ? ' · ' + st : '');
+  document.getElementById('dsmsg').textContent = j.msg || j.note || (items.length ? '点卡片预览，下载会先进隔离区校验。' : '没有找到结果。');
+  document.getElementById('dsprog').style.width = items.length ? '100%' : '0%';
+  if (!items.length) {
+    results.innerHTML = '<div class="empty" style="grid-column:1/-1;margin:30px auto"><h2>没有找到资源</h2><p>换个关键词，或改用「站点嗅探」。</p></div>';
+    return;
+  }
+  results.innerHTML = items.map(discCard).join('');
+  results.querySelectorAll('.dscard').forEach(c => c.onclick = e => {
+    if (e.target.closest('button')) return;
+    openDsPreview(+c.dataset.di);
+  });
+  results.querySelectorAll('[data-prev]').forEach(b => b.onclick = e => { e.stopPropagation(); openDsPreview(+b.dataset.prev); });
+  results.querySelectorAll('[data-dl]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    const i = +b.dataset.dl;
+    openDsPreview(i);
+    setTimeout(dsDownload, 80);
+  });
+}
+async function discSearch(){
+  const q = document.getElementById('dsq').value.trim();
+  if (!q) { toast('先输入关键词'); return; }
+  if (!DISC.sources.size) { toast('至少选择一个来源'); return; }
+  document.getElementById('dsmsg').textContent = '正在搜索公开源…';
+  document.getElementById('dsstat').textContent = '搜索中…';
+  document.getElementById('dsprog').style.width = '45%';
+  const kinds = DISC.kind === 'all' ? '' : DISC.kind;
+  const url = '/api/discover/search?q=' + encodeURIComponent(q) + '&kinds=' + kinds +
+              '&sources=' + [...DISC.sources].join(',') + '&limit=20';
+  try {
+    const j = await fetch(url).then(x=>x.json());
+    discPaint(j);
+  } catch(e) {
+    document.getElementById('dsmsg').textContent = '搜索失败：' + e;
+    document.getElementById('dsprog').style.width = '0%';
+  }
+}
+async function discSite(){
+  let u = document.getElementById('dssiteurl').value.trim();
+  if (!u) { toast('先输入站点地址'); return; }
+  if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+  const q = document.getElementById('dssiteq').value.trim();
+  const max_pages = document.getElementById('dspages').value;
+  document.getElementById('dsmsg').textContent = '正在按 robots.txt 限速嗅探公开页面…';
+  document.getElementById('dsstat').textContent = '站点嗅探中…';
+  document.getElementById('dsprog').style.width = '45%';
+  const body = {url:u, q, kinds: DISC.kind === 'all' ? 'image,video,audio,doc' : DISC.kind,
+                max_pages:+max_pages, max_items:80};
+  try {
+    const j = await fetch('/api/discover/site', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body)}).then(x=>x.json());
+    if (!j.ok) {
+      document.getElementById('dsstat').textContent = '嗅探失败';
+      document.getElementById('dsmsg').textContent = j.msg || '嗅探失败';
+      document.getElementById('dsprog').style.width = '0%';
+      return;
+    }
+    const extra = (j.warnings && j.warnings.length) ? (' · ' + j.warnings[0]) : '';
+    j.note = (j.note || '') + (j.pages ? ('已读 ' + j.pages + ' 个页面' + extra) : '');
+    discPaint(j);
+  } catch(e) {
+    document.getElementById('dsstat').textContent = '嗅探失败';
+    document.getElementById('dsmsg').textContent = '请求失败：' + e;
+    document.getElementById('dsprog').style.width = '0%';
+  }
+}
+function openDsPreview(i){
+  const it = (DISC.items || [])[i];
+  if (!it) return;
+  DISC.cur = it; DISC.quarantine = null; DISC.downloading = false;
+  document.getElementById('dsp_title').textContent = it.name || '资源预览';
+  document.getElementById('dsp_src').textContent = (it.source || '资源') + ' · ' + discKindText(it.kind);
+  let media = '';
+  if (it.kind === '图片') {
+    const u = it.thumb || it.url;
+    media = '<img src="'+discUrl(u)+'" alt="" onerror="this.style.display=\'none\'">';
+  } else {
+    media = '<div style="text-align:center;padding:34px 18px"><div style="font-size:52px;line-height:1">'+discIco(it.kind)+'</div>'+
+            '<div class="mini" style="margin-top:12px">'+esc(it.kind)+'资源不内嵌原站播放器，下载校验后可在素材坞预览</div></div>';
+  }
+  document.getElementById('dsp_media').innerHTML = media;
+  const metas = [];
+  if (it.author) metas.push('作者：' + esc(it.author));
+  if (it.license) metas.push('许可：' + esc(it.license));
+  if (it.desc) metas.push(esc(it.desc));
+  document.getElementById('dsp_meta').innerHTML = metas.join('<br>') || '来源页只作记录，预览不加载原站脚本。';
+  document.getElementById('dsp_status').textContent = '';
+  document.getElementById('dsp_bar').style.width = '0%';
+  const dl = document.getElementById('dsp_dl');
+  dl.disabled = false; dl.textContent = '下载并校验';
+  document.getElementById('dsp_ingest').style.display = 'none';
+  document.getElementById('dspreview').classList.add('on');
+}
+async function dsDownload(){
+  const it = DISC.cur;
+  if (!it || DISC.downloading) return;
+  DISC.downloading = true;
+  document.getElementById('dsp_dl').disabled = true;
+  document.getElementById('dsp_ingest').style.display = 'none';
+  document.getElementById('dsp_status').textContent = '正在下载…';
+  document.getElementById('dsp_bar').style.width = '8%';
+  const body = {url:it.url, name:it.name, kind:it.kind, source:it.source, license:it.license,
+                page:it.page, title:it.name};
+  const r = await fetch('/api/discover/download', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)}).then(x=>x.json()).catch(()=>({ok:false,msg:'请求失败'}));
+  if (!r.ok) {
+    DISC.downloading = false;
+    document.getElementById('dsp_dl').disabled = false;
+    document.getElementById('dsp_status').textContent = r.msg || '下载失败';
+    return;
+  }
+  if (DISC.timer) clearInterval(DISC.timer);
+  const tick = async () => {
+    let st;
+    try { st = await fetch('/api/discover/status').then(x=>x.json()); } catch(e) { return; }
+    const j = st.job || {};
+    document.getElementById('dsp_bar').style.width = (j.progress || 0) + '%';
+    document.getElementById('dsp_status').textContent = j.msg || '处理中…';
+    if (j.running) return;
+    clearInterval(DISC.timer); DISC.timer = null; DISC.downloading = false;
+    if (j.phase !== 'ready' || !j.result) {
+      document.getElementById('dsp_dl').disabled = false;
+      document.getElementById('dsp_status').textContent = j.error || j.msg || '下载失败';
+      return;
+    }
+    DISC.quarantine = j.result;
+    const scan = j.result.scan === 'clean' ? 'Defender 未检出威胁'
+      : (j.result.scan === 'unavailable' ? '系统未启用 Defender，未完成扫描' : 'Defender 扫描未完成，请自行确认');
+    document.getElementById('dsp_status').textContent = '已下载 ' + kb(j.result.size) + ' · ' + scan;
+    document.getElementById('dsp_bar').style.width = '100%';
+    document.getElementById('dsp_dl').textContent = '已下载';
+    document.getElementById('dsp_ingest').style.display = '';
+  };
+  tick();
+  DISC.timer = setInterval(tick, 800);
+}
+async function dsIngest(){
+  const q = DISC.quarantine;
+  if (!q) return;
+  const r = await fetch('/api/discover/ingest', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({token:q.token})}).then(x=>x.json()).catch(()=>({ok:false,msg:'请求失败'}));
+  if (!r.ok) { document.getElementById('dsp_status').textContent = r.msg || '入库失败'; return; }
+  DISC.quarantine = null;
+  document.getElementById('dsp_ingest').style.display = 'none';
+  document.getElementById('dspreview').classList.remove('on');
+  toast('已入库：' + r.name);
+  loadFacets();
+  if (S.view === 'grid') resetAndLoad(); else showAlbums();
+}
+document.querySelectorAll('.dst').forEach(b => b.onclick = () => discSetMode(b.dataset.mode));
+document.querySelectorAll('#dskindrow .dchip').forEach(b => b.onclick = () => {
+  DISC.kind = b.dataset.kind;
+  document.querySelectorAll('#dskindrow .dchip').forEach(x => x.classList.toggle('on', x === b));
+});
+document.getElementById('dsgo').onclick = discSearch;
+document.getElementById('dssitego').onclick = discSite;
+document.getElementById('dsp_dl').onclick = dsDownload;
+document.getElementById('dsp_ingest').onclick = dsIngest;
+document.getElementById('dsq').addEventListener('keydown', e => { if (e.key === 'Enter') discSearch(); });
+document.getElementById('dssiteurl').addEventListener('keydown', e => { if (e.key === 'Enter') discSite(); });
+document.getElementById('dssiteq').addEventListener('keydown', e => { if (e.key === 'Enter') discSite(); });
+/* 旧接口保留：外部脚本若还在调用 openDiscover，会走上面的新实现 */
+
 /* ---------- 格式转换 ---------- */
 let cfIds = [];
 let cfTimer = null;
@@ -1791,146 +2101,59 @@ document.getElementById('cfstart').onclick = async () => {
   cfPoll();
 };
 
-/* ---------- 图片去水印 ---------- */
-let wmId = 0, wmImg = null, wmStrokes = [], wmCur = null, wmDrawing = false;
-const wmStage = document.getElementById('wmstage');
-const wmBaseCv = document.getElementById('wmbase');
-const wmViewCv = document.getElementById('wmview');
-const wmRawCv = document.getElementById('wmraw');
-const wmBaseCtx = wmBaseCv.getContext('2d');
-const wmViewCtx = wmViewCv.getContext('2d');
-const wmRawCtx = wmRawCv.getContext('2d');
-function wmRadiusCss(){
-  return Math.max(4, +(document.getElementById('wmbrush').value || 28)) / 2;
-}
-function wmCanvasRadius(){
-  const rect = wmViewCv.getBoundingClientRect();
-  const scale = rect.width ? wmViewCv.width / rect.width : 1;
-  return Math.max(2, wmRadiusCss() * scale);
-}
-function wmDrawStroke(s){
-  const r = s.r, pts = s.points || [];
-  if (!pts.length) return;
-  for (const [ctx, color, alpha] of [[wmRawCtx, '#fff', 1], [wmViewCtx, '#ff4848', .42]]) {
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.strokeStyle = color;
-    ctx.fillStyle = color;
-    ctx.lineWidth = r * 2;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-    ctx.stroke();
-    if (pts.length === 1) {
-      ctx.beginPath(); ctx.arc(pts[0].x, pts[0].y, r, 0, Math.PI*2); ctx.fill();
-    }
-    ctx.restore();
-  }
-}
-function wmRedrawStrokes(){
-  wmRawCtx.clearRect(0,0,wmRawCv.width,wmRawCv.height);
-  wmViewCtx.clearRect(0,0,wmViewCv.width,wmViewCv.height);
-  wmStrokes.forEach(wmDrawStroke);
-}
-function wmPos(e){
-  const rect = wmViewCv.getBoundingClientRect();
-  const sx = rect.width ? wmViewCv.width / rect.width : 1;
-  const sy = rect.height ? wmViewCv.height / rect.height : 1;
-  return {x: Math.max(0, Math.min(wmViewCv.width, (e.clientX-rect.left)*sx)),
-          y: Math.max(0, Math.min(wmViewCv.height, (e.clientY-rect.top)*sy))};
-}
-function wmFit(){
-  if (!wmImg) return;
-  const box = document.querySelector('#wmpanel .pbox');
-  const maxW = Math.max(320, (box ? box.clientWidth : 900) - 40);
-  const maxH = Math.max(240, Math.min(window.innerHeight * 0.62, 720));
-  const iw = wmImg.naturalWidth || 1, ih = wmImg.naturalHeight || 1;
-  const s = Math.min(1, maxW / iw, maxH / ih);
-  wmStage.style.width = Math.round(iw * s) + 'px';
-  wmStage.style.height = Math.round(ih * s) + 'px';
-}
+/* ---------- 一键去水印 ---------- */
+let wmId = 0, wmResultId = 0, wmBusy = false;
 function openWatermark(id){
   const it = itemOf(id);
   if (!it || it.media !== '图片') { toast('去水印只支持图片'); return; }
-  wmId = id;
-  wmImg = null; wmStrokes = []; wmCur = null; wmDrawing = false;
+  wmId = id; wmResultId = 0; wmBusy = false;
   document.getElementById('wmname').textContent = it.name;
   document.getElementById('wmmsg').textContent = '正在载入图片…';
-  document.getElementById('wmbrushval').textContent = document.getElementById('wmbrush').value + ' px';
-  wmRawCv.width = 1; wmRawCv.height = 1;
-  wmBaseCv.width = 1; wmBaseCv.height = 1; wmViewCv.width = 1; wmViewCv.height = 1;
+  const orig = document.getElementById('wmorig');
+  const res = document.getElementById('wmresult');
+  orig.src = '/api/wm/preview/' + id + '?t=' + Date.now();
+  res.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+  document.getElementById('wmreveal').style.display = 'none';
+  document.getElementById('wmrun').disabled = false;
   openPanel('wmpanel');
-  const img = new Image();
-  img.onload = () => {
-    wmImg = img;
-    wmBaseCv.width = img.naturalWidth; wmBaseCv.height = img.naturalHeight;
-    wmViewCv.width = img.naturalWidth; wmViewCv.height = img.naturalHeight;
-    wmRawCv.width = img.naturalWidth; wmRawCv.height = img.naturalHeight;
-    wmBaseCtx.clearRect(0,0,wmBaseCv.width,wmBaseCv.height);
-    wmBaseCtx.drawImage(img, 0, 0);
-    wmViewCtx.clearRect(0,0,wmViewCv.width,wmViewCv.height);
-    wmRawCtx.clearRect(0,0,wmRawCv.width,wmRawCv.height);
-    wmFit();
-    document.getElementById('wmmsg').textContent = '用水印处涂满整条水印，再点「去除水印」。只生成副本，原图保留；小面积文字/角标效果最好，复杂纹理会有涂抹感。';
+  orig.onload = () => {
+    document.getElementById('wmmsg').textContent = '点「一键去水印」自动识别并处理。只生成副本，原图保留；识别强度可从 3 开始，效果不够再调高。';
   };
-  img.onerror = () => {
+  orig.onerror = () => {
     document.getElementById('wmmsg').textContent = '这个图片格式解不出来，暂时不能去水印。';
-    toast('图片载入失败');
   };
-  img.src = '/api/wm/preview/' + id + '?t=' + Date.now();
 }
-wmViewCv.addEventListener('pointerdown', e => {
-  if (!wmImg) return;
-  e.preventDefault();
-  wmViewCv.setPointerCapture(e.pointerId);
-  wmDrawing = true;
-  const p = wmPos(e);
-  wmCur = {points:[{x:p.x, y:p.y}], r:wmCanvasRadius()};
-  wmStrokes.push(wmCur);
-  wmDrawStroke(wmCur);
-});
-wmViewCv.addEventListener('pointermove', e => {
-  if (!wmDrawing || !wmImg || !wmCur) return;
-  const p = wmPos(e);
-  const last = wmCur.points[wmCur.points.length - 1];
-  if (last && Math.abs(last.x-p.x) + Math.abs(last.y-p.y) < 1) return;
-  wmCur.points.push({x:p.x, y:p.y});
-  // 只重画当前这一笔，避免整张大图每帧重绘
-  wmRawCtx.clearRect(0,0,wmRawCv.width,wmRawCv.height);
-  wmViewCtx.clearRect(0,0,wmViewCv.width,wmViewCv.height);
-  wmStrokes.forEach(wmDrawStroke);
-});
-wmViewCv.addEventListener('pointerup', () => { wmDrawing = false; wmCur = null; });
-wmViewCv.addEventListener('pointercancel', () => { wmDrawing = false; wmCur = null; });
-document.getElementById('wmbrush').oninput = () => {
-  document.getElementById('wmbrushval').textContent = document.getElementById('wmbrush').value + ' px';
-};
-document.getElementById('wmundo').onclick = () => {
-  if (!wmStrokes.length) return;
-  wmStrokes.pop(); wmRedrawStrokes();
-};
-document.getElementById('wmclear').onclick = () => {
-  wmStrokes = []; wmRedrawStrokes();
-};
 document.getElementById('wmrun').onclick = async () => {
-  if (!wmId || !wmImg) { toast('图片还没载入'); return; }
-  if (!wmStrokes.length) { toast('先用画笔把水印涂满'); return; }
+  if (!wmId || wmBusy) return;
   const btn = document.getElementById('wmrun');
+  wmBusy = true;
   btn.disabled = true;
-  document.getElementById('wmmsg').textContent = '正在本地修复，图片大时可能要几秒…';
-  const r = await fetch('/api/watermark/remove', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({id:wmId, mask:wmRawCv.toDataURL('image/png'), radius:4})})
+  wmResultId = 0;
+  document.getElementById('wmreveal').style.display = 'none';
+  document.getElementById('wmmsg').textContent = '正在自动识别水印并补背景，图片大时可能要几秒…';
+  const strength = document.getElementById('wmstrength').value;
+  const r = await fetch('/api/watermark/auto', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id:wmId, strength:+strength})})
     .then(x=>x.json()).catch(()=>({ok:false,msg:'请求失败'}));
+  wmBusy = false;
   btn.disabled = false;
-  if (!r.ok) { document.getElementById('wmmsg').textContent = r.msg || '去水印失败'; toast(r.msg || '去水印失败'); return; }
+  if (!r.ok) {
+    document.getElementById('wmmsg').textContent = r.msg || '没有识别到水印';
+    toast(r.msg || '没有识别到水印');
+    return;
+  }
+  wmResultId = r.id || 0;
+  const res = document.getElementById('wmresult');
+  res.src = '/preview/' + wmResultId + '?t=' + Date.now();
+  document.getElementById('wmreveal').style.display = wmResultId ? '' : 'none';
+  document.getElementById('wmmsg').textContent = '已自动识别 ' + (r.regions || 1) + ' 处文字/角标，处理了 ' + num(r.pixels || 0) + ' 个像素。不满意可把强度调高再点一次，或关闭后从原图重来。';
   toast('已生成 ' + r.name);
-  closePanel('wmpanel');
   loadFacets();
   if (S.view === 'grid') resetAndLoad(); else showAlbums();
 };
-window.addEventListener('resize', () => { if (document.getElementById('wmpanel').classList.contains('on')) wmFit(); });
+document.getElementById('wmreveal').onclick = () => {
+  if (wmResultId) fetch('/api/reveal/' + wmResultId, {method:'POST'}).catch(()=>{});
+};
 
 /* ---------- 内容索引 ---------- */
 let contentTimer = null;

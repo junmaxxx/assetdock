@@ -20,16 +20,29 @@ import math
 import uuid
 import shutil
 import socket
+import ssl
 import base64
 import hashlib
+import glob
 import sqlite3
 import tempfile
 import subprocess
 import webbrowser
 import threading
 import urllib.request
+import urllib.error
+import urllib.robotparser
+import ipaddress
+import html as htmllib
+try:
+    import certifi
+    _CA_BUNDLE = certifi.where()
+except Exception:
+    _CA_BUNDLE = ''
+import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs, quote
+from urllib.parse import urlparse, parse_qs, quote, urlencode, urljoin
 
 try:
     import imagesize  # 只读文件头拿宽高，比 Pillow 解码快很多；装不上就回退 Pillow
@@ -49,6 +62,20 @@ PLAY_DIR = os.path.join(IDX, '播放缓存')
 TRASH_DIR = os.path.join(IDX, '待删除')
 TOOLS = os.path.join(BASE, '_工具')
 APP_HTML = os.path.join(TOOLS, 'app.html')
+
+# v1.7：资源搜索的下载隔离区与预览缓存。所有网络文件先落隔离区，校验/扫描通过后才允许入库。
+DISCOVER_DIR = os.path.join(IDX, '资源下载')
+DISCOVER_QUAR = os.path.join(DISCOVER_DIR, '_隔离')
+DISCOVER_THUMB = os.path.join(IDX, '资源预览')
+DISCOVER_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+               '(KHTML, like Gecko) Chrome/124.0 Safari/537.36 AssetDock/1.7.0')
+DISCOVER_MAX_DL = 200 * 1024 * 1024
+DISCOVER_MAX_HTML = 6 * 1024 * 1024
+DISCOVER_MAX_THUMB = 14 * 1024 * 1024
+DISCOVER_JOB = {'running': False, 'phase': 'idle', 'msg': '', 'progress': 0, 'result': None,
+                'error': '', 'started': 0}
+DISCOVER_LOCK = threading.Lock()
+ALLOW_PRIVATE = os.environ.get('ASSETDOCK_ALLOW_PRIVATE') == '1'
 
 # 统计缓存：任何索引/标签/收藏变化都让版本号 +1，旧缓存立即失效
 _DATA_VER = 0
@@ -314,8 +341,9 @@ def load_list(name, default):
 
 
 def ensure_dirs():
-    for d in (IDX, THUMB_DIR):
+    for d in (IDX, THUMB_DIR, DISCOVER_DIR, DISCOVER_QUAR, DISCOVER_THUMB):
         os.makedirs(d, exist_ok=True)
+    _clean_discover_quarantine()
 
 
 def connect():
@@ -2554,8 +2582,1005 @@ def watermark_remove_file(path, name, mask_s, radius=4):
     return target
 
 
+def _wm_auto_mask(rgb, strength=3):
+    """自动找“半透明浅色/深色文字 + 角标”候选区，返回像素遮罩和候选框。
+
+    只做保守检测：低饱和、局部对比强的细笔画，横向合并成文字行；找不到就明确失败，
+    不用大面积涂抹冒充成功。复杂彩色 logo 可能识别不到，可提高识别强度再试。
+    """
+    import numpy as np
+    import cv2
+    h, w = rgb.shape[:2]
+    scale = min(1.0, 1800.0 / max(1, max(h, w)))
+    if scale < 1:
+        small = cv2.resize(rgb, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
+    else:
+        small = rgb
+    sh, sw = small.shape[:2]
+    gray = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
+    hsv = cv2.cvtColor(small, cv2.COLOR_RGB2HSV)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, k)
+    blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, k)
+    contrast = cv2.max(tophat, blackhat)
+    thr = (45, 36, 28, 21, 15)[max(1, min(5, int(strength))) - 1]
+    # 半透明白字/深字：用局部均值差补足笔画内部（tophat 往往只抓到边缘，容易残留鬼影）
+    sigma = max(5, min(sh, sw) / 45.0)
+    local = cv2.GaussianBlur(gray, (0, 0), sigma)
+    bright_diff = gray.astype(np.int16) - local.astype(np.int16)
+    dark_diff = local.astype(np.int16) - gray.astype(np.int16)
+    white_px = (hsv[:, :, 1] < 72) & (hsv[:, :, 2] > 150)
+    dark_px = (hsv[:, :, 1] < 72) & (hsv[:, :, 2] < 105)
+    cand = (((tophat > thr * 0.45) | (bright_diff > 9)) & white_px) | \
+           (((blackhat > thr * 0.45) | (dark_diff > 9)) & dark_px)
+    # 先在“笔画级”连通域上过滤，再按同一行/相近字高聚成文字块。
+    # 直接横向膨胀会把文字和背景纹理连成巨大连通域，反而漏掉真正的水印。
+    raw = cand.astype(np.uint8)
+    n, labels, stats, cents = cv2.connectedComponentsWithStats(raw, 8)
+    letters = []
+    for i in range(1, n):
+        x, y, bw, bh, area = [int(v) for v in stats[i]]
+        if bw < 2 or bh < 2 or area < 8:
+            continue
+        if bw > sw * 0.60 or bh > sh * 0.60:
+            continue
+        fill = float(area) / max(1, bw * bh)
+        if fill < 0.06:
+            continue
+        roi_c = contrast[y:y + bh, x:x + bw]
+        roi_m = raw[y:y + bh, x:x + bw].astype(bool)
+        sm = float(roi_c[roi_m].mean()) if roi_m.any() else 0.0
+        score = sm * math.sqrt(max(1, area)) * (0.65 + 0.35 * fill)
+        letters.append((score, x, y, bw, bh, area))
+    letters.sort(key=lambda z: (z[2] + z[4] / 2, z[1]))
+    used = [False] * len(letters)
+    clusters = []
+    for i, seed in enumerate(letters):
+        if used[i]:
+            continue
+        used[i] = True
+        stack = [i]
+        group = [seed]
+        while stack:
+            cur = stack.pop()
+            _, cx, cy, cw, ch, ca = letters[cur]
+            for j, l in enumerate(letters):
+                if used[j]:
+                    continue
+                _, x, y, bw, bh, area = l
+                cy1 = cy + ch / 2
+                cy2 = y + bh / 2
+                gap_y = max(4, int(min(ch, bh) * 0.75))
+                gap_x = max(10, int(max(ch, bh) * 1.35))
+                if abs(cy1 - cy2) <= gap_y and not (x > cx + cw + gap_x or x + bw + gap_x < cx):
+                    used[j] = True
+                    stack.append(j)
+                    group.append(l)
+        gx = min(z[1] for z in group)
+        gy = min(z[2] for z in group)
+        gx2 = max(z[1] + z[3] for z in group)
+        gy2 = max(z[2] + z[4] for z in group)
+        bw, bh = gx2 - gx, gy2 - gy
+        if bw < 18 or bh < 6:
+            continue
+        if bw > sw * 0.96 or bh > sh * 0.30:
+            continue
+        if bw / max(1, bh) < 1.5 or bw / max(1, bh) > 22:
+            continue
+        garea = sum(z[5] for z in group)
+        fill = float(garea) / max(1, bw * bh)
+        if fill < 0.10 or fill > 0.62:
+            continue
+        score = sum(z[0] for z in group) * (0.70 + 0.30 * fill)
+        clusters.append((score, gx, gy, bw, bh))
+    clusters.sort(reverse=True)
+    # 只取最像水印的候选，并把同一行的邻近块再合并一次
+    chosen = []
+    for b in clusters[:36]:
+        _, x, y, bw, bh = b
+        merged = False
+        for j, c in enumerate(chosen):
+            cx, cy, cw, ch = c[1], c[2], c[3], c[4]
+            gap = max(10, int(min(bh, ch) * 0.55))
+            if not (x > cx + cw + gap or x + bw + gap < cx
+                    or y > cy + ch + max(3, gap // 3) or y + bh + max(3, gap // 3) < cy):
+                nx, ny = min(x, cx), min(y, cy)
+                nx2, ny2 = max(x + bw, cx + cw), max(y + bh, cy + ch)
+                chosen[j] = (max(c[0], b[0]), nx, ny, nx2 - nx, ny2 - ny)
+                merged = True
+                break
+        if not merged:
+            chosen.append(b)
+        if len(chosen) >= 18:
+            break
+    mask_small = np.zeros((sh, sw), np.uint8)
+    for _, x, y, bw, bh in chosen:
+        # 用候选笔画的“文字行带”做整段填充：把字间空隙一起盖住，避免半透明字留下鬼影。
+        roi = raw[y:y + bh, x:x + bw]
+        rows = roi.sum(axis=1)
+        cols = roi.sum(axis=0)
+        thr_row = max(2, int(bw * 0.012))
+        thr_col = max(1, int(bh * 0.02))
+        ys = [i for i, v in enumerate(rows) if v >= thr_row]
+        xs = [i for i, v in enumerate(cols) if v >= thr_col]
+        if not ys or not xs:
+            continue
+        # 找连续行段，取候选像素最多的一段，避免把邻近背景边缘算进来
+        runs, cur = [], [ys[0]]
+        for v in ys[1:]:
+            if v == cur[-1] + 1:
+                cur.append(v)
+            else:
+                runs.append(cur); cur = [v]
+        runs.append(cur)
+        run = max(runs, key=lambda r: rows[r].sum())
+        y1, y2 = y + run[0], y + run[-1] + 1
+        x1, x2 = x + min(xs), x + max(xs) + 1
+        mask_small[max(0, y1 - 2):min(sh, y2 + 2), max(0, x1 - 2):min(sw, x2 + 2)] = 255
+    # 外扩盖住抗锯齿边缘
+    dil = 1 + max(0, int(strength) - 3)
+    mask_small = cv2.dilate(mask_small, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=dil)
+    if not mask_small.any():
+        return np.zeros((h, w), np.uint8), []
+    # 笔画外扩，盖住抗锯齿边缘；按强度微调
+    dil = 2 + max(0, int(strength) - 3)
+    mask_small = cv2.dilate(mask_small, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=dil)
+    if scale < 1:
+        mask = cv2.resize(mask_small, (w, h), interpolation=cv2.INTER_NEAREST)
+    else:
+        mask = mask_small
+    return mask, chosen
+
+
+def watermark_auto_file(path, name, strength=3, radius=5):
+    """一键去水印：自动识别候选区域后 inpaint，生成新副本，不覆盖原图。"""
+    import numpy as np
+    import cv2
+    from PIL import Image, ImageOps
+    with Image.open(path) as src:
+        src = ImageOps.exif_transpose(src)
+        has_alpha = ('A' in src.getbands()) or src.mode in ('P', 'LA')
+        rgba = src.convert('RGBA') if has_alpha else None
+        rgb = src.convert('RGB')
+        arr = np.array(rgb)
+        mask, boxes = _wm_auto_mask(arr, strength)
+        if not mask.any():
+            raise RuntimeError('没有识别到明显水印，可把识别强度调高再试')
+        ratio = float((mask > 0).sum()) / max(1, mask.size)
+        if ratio > 0.22:
+            raise RuntimeError('识别区域过大（%.0f%%），可能误伤画面，请把强度调低' % (ratio * 100))
+        radius = max(2, min(10, int(radius or 5)))
+        bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+        fixed = cv2.inpaint(bgr, mask, radius, cv2.INPAINT_TELEA)
+        out_img = Image.fromarray(cv2.cvtColor(fixed, cv2.COLOR_BGR2RGB))
+        if rgba is not None:
+            out_img.putalpha(rgba.getchannel('A'))
+        folder = os.path.dirname(path)
+        base = os.path.splitext(name)[0]
+        target = _unique_target(folder, base + '_去水印.png')
+        out_img.save(target, 'PNG', optimize=True)
+    return target, int((mask > 0).sum()), len(boxes)
+
+
+
+DISCOVER_KIND = {'image': '图片', 'video': '视频', 'audio': '音频', 'doc': '文档'}
+DISCOVER_DL_IMAGE = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tif', '.tiff', '.avif'}
+DISCOVER_DL_VIDEO = {'.mp4', '.webm', '.mov', '.mkv', '.avi', '.m4v', '.flv'}
+DISCOVER_DL_AUDIO = {'.mp3', '.wav', '.m4a', '.ogg', '.flac', '.aac', '.opus'}
+DISCOVER_DL_DOC = {'.pdf', '.ppt', '.pptx'}
+DISCOVER_SAFE_EXT = DISCOVER_DL_IMAGE | DISCOVER_DL_VIDEO | DISCOVER_DL_AUDIO | DISCOVER_DL_DOC
+DISCOVER_CTYPE_EXT = {
+    'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif',
+    'image/bmp': '.bmp', 'image/tiff': '.tif', 'image/avif': '.avif',
+    'video/mp4': '.mp4', 'video/webm': '.webm', 'video/quicktime': '.mov',
+    'video/x-matroska': '.mkv', 'video/x-msvideo': '.avi',
+    'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'audio/x-wav': '.wav',
+    'audio/mp4': '.m4a', 'audio/ogg': '.ogg', 'audio/flac': '.flac',
+    'application/pdf': '.pdf',
+}
+
+DISCOVER_SOURCES = [
+    {'key': 'bing', 'name': 'Bing 图片', 'kinds': ['图片'],
+     'note': '搜索引擎结果，覆盖广；版权状态未知，下载前请自行确认授权'},
+    {'key': 'arxiv', 'name': 'arXiv', 'kinds': ['文档'],
+     'note': '公开论文预印本，可直接下载 PDF'},
+    {'key': 'openalex', 'name': 'OpenAlex', 'kinds': ['文档'],
+     'note': '开放获取论文，优先取 PDF 直链'},
+]
+
+
+def _clean_discover_quarantine():
+    """隔离区超过 24 小时的残留下载自动清掉，避免占空间。"""
+    try:
+        now = time.time()
+        for ent in os.scandir(DISCOVER_QUAR):
+            if ent.is_dir() and now - ent.stat().st_mtime > 86400:
+                shutil.rmtree(ent.path, ignore_errors=True)
+    except Exception:
+        pass
+
+
+def _discover_job(**kw):
+    with DISCOVER_LOCK:
+        DISCOVER_JOB.update(kw)
+
+
+def discover_status():
+    with DISCOVER_LOCK:
+        return dict(DISCOVER_JOB)
+
+
+def _host_private(host):
+    h = (host or '').strip().strip('[]').lower().rstrip('.')
+    if not h:
+        return True
+    if h in ('localhost', 'localhost.localdomain') or h.endswith('.local') or h.endswith('.localhost'):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+        return bool(ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                    or ip.is_multicast or ip.is_unspecified)
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(h, None)
+    except Exception:
+        return True
+    for fam, _, _, _, sockaddr in infos:
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except Exception:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                or ip.is_multicast or ip.is_unspecified):
+            return True
+    return False
+
+
+def _safe_remote_url(url, allow_private=None):
+    """只允许 http/https 公网地址，挡住 localhost / 内网 / 云元数据地址（SSRF）。"""
+    u = (url or '').strip()
+    if not u:
+        raise ValueError('缺少资源地址')
+    if u.startswith('//'):
+        u = 'https:' + u
+    if not re.match(r'^https?://', u, re.I):
+        u = 'https://' + u.lstrip('/')
+    p = urlparse(u)
+    if p.scheme.lower() not in ('http', 'https'):
+        raise ValueError('只支持 http / https 地址')
+    if not p.hostname:
+        raise ValueError('地址缺少域名')
+    if p.username or p.password:
+        raise ValueError('地址里不允许带账号密码')
+    ap = ALLOW_PRIVATE if allow_private is None else allow_private
+    if not ap and _host_private(p.hostname):
+        raise ValueError('已拦截内网 / 本机地址')
+    return u
+
+
+class _DiscoverRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        newurl = urljoin(req.full_url, newurl)
+        _safe_remote_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open_remote(url, timeout=18, headers=None):
+    url = _safe_remote_url(url)
+    h = {'User-Agent': DISCOVER_UA, 'Accept': '*/*', 'Accept-Encoding': 'identity'}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, headers=h)
+    ctx = ssl.create_default_context(cafile=_CA_BUNDLE or None)
+    opener = urllib.request.build_opener(_DiscoverRedirect(), urllib.request.HTTPSHandler(context=ctx))
+    return opener.open(req, timeout=timeout)
+
+
+def _read_limited(resp, limit):
+    chunks = []
+    total = 0
+    while True:
+        b = resp.read(65536)
+        if not b:
+            break
+        total += len(b)
+        if total > limit:
+            raise ValueError('内容超过 %d MB 上限' % (limit // 1048576))
+        chunks.append(b)
+    return b''.join(chunks)
+
+
+def _fetch_remote(url, timeout=18, limit=DISCOVER_MAX_HTML, headers=None):
+    with _open_remote(url, timeout=timeout, headers=headers) as r:
+        final = r.geturl()
+        _safe_remote_url(final)
+        ctype = (r.headers.get('Content-Type') or '').split(';')[0].strip().lower()
+        data = _read_limited(r, limit)
+        return data, ctype, final, dict(r.headers)
+
+
+def _fetch_json(url, timeout=18, limit=DISCOVER_MAX_HTML):
+    data, ctype, final, headers = _fetch_remote(url, timeout=timeout, limit=limit)
+    try:
+        return json.loads(data.decode('utf-8', 'replace')), final, ctype
+    except Exception as e:
+        raise ValueError('返回的不是有效 JSON：%s' % e)
+
+
+def _thumb_cache(url):
+    key = hashlib.sha1(url.encode('utf-8')).hexdigest()
+    p = os.path.join(DISCOVER_THUMB, key + '.png')
+    try:
+        if os.path.exists(p) and time.time() - os.path.getmtime(p) < 7 * 86400:
+            return p
+    except Exception:
+        pass
+    return p
+
+
+def _make_thumb_bytes(url):
+    os.makedirs(DISCOVER_THUMB, exist_ok=True)
+    data, ctype, final, headers = _fetch_remote(url, timeout=15, limit=DISCOVER_MAX_THUMB,
+                                                 headers={'Accept': 'image/*'})
+    if not (ctype.startswith('image/') or ctype == 'application/octet-stream'):
+        raise ValueError('预览不是图片')
+    if ctype == 'image/svg+xml' or url.lower().split('?')[0].endswith('.svg'):
+        raise ValueError('不预览 SVG')
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(data)) as im:
+            im = ImageOps.exif_transpose(im)
+            im.thumbnail((1400, 1400), Image.LANCZOS)
+            if im.mode not in ('RGB', 'RGBA'):
+                im = im.convert('RGBA' if 'A' in im.getbands() else 'RGB')
+            buf = io.BytesIO()
+            im.save(buf, 'PNG', optimize=True)
+            return buf.getvalue()
+    except Exception as e:
+        raise ValueError('图片解不出来：%s' % str(e)[:80])
+
+
+def _card(**kw):
+    d = {'url': '', 'name': '', 'kind': '图片', 'source': '', 'license': '版权未知',
+         'author': '', 'page': '', 'thumb': '', 'desc': ''}
+    d.update(kw)
+    return d
+
+
+def _basename_from_url(url, fallback='资源'):
+    try:
+        path = urllib.parse.unquote(urlparse(url).path)
+        nm = os.path.basename(path)
+        if nm and len(nm) <= 160:
+            return nm
+    except Exception:
+        pass
+    return fallback
+
+
+def _bing_search(q, limit=16):
+    url = 'https://cn.bing.com/images/async?' + urlencode({
+        'q': q, 'first': 1, 'count': max(12, min(35, limit * 2)), 'mmasync': 1, 'mkt': 'zh-CN'})
+    data, ctype, final, headers = _fetch_remote(url, timeout=16, limit=5 * 1024 * 1024,
+                                                headers={'Accept': 'text/html,*/*'})
+    text = data.decode('utf-8', 'replace')
+    out, seen = [], set()
+    for m in re.finditer(r'm="([^"]+)"', text):
+        raw = htmllib.unescape(m.group(1))
+        try:
+            o = json.loads(raw)
+        except Exception:
+            continue
+        murl = (o.get('murl') or '').strip()
+        turl = (o.get('turl') or '').strip()
+        purl = (o.get('purl') or '').strip()
+        if not (murl.startswith('http://') or murl.startswith('https://')):
+            continue
+        if murl in seen:
+            continue
+        seen.add(murl)
+        title = (o.get('t') or '').strip() or _basename_from_url(murl, '图片')
+        out.append(_card(url=murl, name=title[:120], kind='图片', source='Bing 图片',
+                         license='版权未知（搜索引擎结果）', page=purl, thumb=turl,
+                         desc='来自 Bing 图片搜索，原图直链可能受站点防盗链限制'))
+        if len(out) >= limit:
+            break
+    return out
+
+
+_ATOM = '{http://www.w3.org/2005/Atom}'
+
+
+def _arxiv_search(q, limit=12):
+    url = 'https://export.arxiv.org/api/query?' + urlencode({
+        'search_query': 'all:' + q, 'start': 0, 'max_results': max(1, min(20, limit))})
+    data, ctype, final, headers = _fetch_remote(url, timeout=20, limit=5 * 1024 * 1024)
+    root = ET.fromstring(data)
+    out = []
+    for e in root.findall(_ATOM + 'entry'):
+        title = (e.findtext(_ATOM + 'title') or '').strip().replace('\n', ' ')
+        aid = (e.findtext(_ATOM + 'id') or '').strip()
+        authors = []
+        for a in e.findall(_ATOM + 'author'):
+            nm = (a.findtext(_ATOM + 'name') or '').strip()
+            if nm:
+                authors.append(nm)
+        pdf = ''
+        for ln in e.findall(_ATOM + 'link'):
+            if (ln.get('type') or '').lower() == 'application/pdf' or (ln.get('title') or '').lower() == 'pdf':
+                pdf = ln.get('href') or ''
+                break
+        if not pdf:
+            continue
+        nm = re.sub(r'[\\/:*?"<>|]', '_', title)[:100].strip() or '论文'
+        out.append(_card(url=pdf, name=nm + '.pdf', kind='文档', source='arXiv',
+                         license='arXiv（按论文许可）', author='、'.join(authors[:3]),
+                         page=aid, desc=(e.findtext(_ATOM + 'summary') or '').strip().replace('\n', ' ')[:220]))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _openalex_search(q, limit=12):
+    url = 'https://api.openalex.org/works?' + urlencode({
+        'search': q, 'per-page': max(1, min(20, limit)), 'filter': 'is_oa:true'})
+    data, final, ctype = _fetch_json(url, timeout=20, limit=5 * 1024 * 1024)
+    out = []
+    for w in (data.get('results') or []):
+        title = (w.get('display_name') or '').strip()
+        best = w.get('best_oa_location') or {}
+        pdf = (best.get('pdf_url') or '').strip()
+        if not pdf:
+            continue
+        page = (best.get('landing_page_url') or (w.get('primary_location') or {}).get('landing_page_url')
+                or (w.get('open_access') or {}).get('oa_url') or '')
+        authors = []
+        for a in (w.get('authorships') or [])[:3]:
+            nm = ((a.get('author') or {}).get('display_name') or '').strip()
+            if nm:
+                authors.append(nm)
+        lic = (best.get('license') or (w.get('open_access') or {}).get('oa_status') or '开放获取')
+        nm = re.sub(r'[\\/:*?"<>|]', '_', title)[:100].strip() or '论文'
+        out.append(_card(url=pdf, name=nm + '.pdf', kind='文档', source='OpenAlex',
+                         license=lic, author='、'.join(authors), page=page,
+                         desc='开放获取论文，PDF 由 OpenAlex 指向'))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _search_one_source(key, q, limit):
+    if key == 'bing':
+        return _bing_search(q, limit)
+    if key == 'arxiv':
+        return _arxiv_search(q, limit)
+    if key == 'openalex':
+        return _openalex_search(q, limit)
+    return []
+
+
+def discover_sources():
+    return {'sources': DISCOVER_SOURCES, 'kinds': [{'key': k, 'name': v} for k, v in DISCOVER_KIND.items()],
+            'note': 'Google 在当前网络不可达，未作为默认源；Bing 图片可选，版权需自行确认。'}
+
+
+def discover_search(q, kinds='', sources='', limit=16):
+    q = (q or '').strip()
+    if not q:
+        return {'ok': False, 'msg': '请输入关键词', 'items': [], 'status': []}
+    if len(q) > 80:
+        q = q[:80]
+    kind_names = set()
+    for k in (kinds or '').split(','):
+        k = k.strip()
+        if k in DISCOVER_KIND:
+            kind_names.add(DISCOVER_KIND[k])
+        elif k in DISCOVER_KIND.values():
+            kind_names.add(k)
+    if not kind_names:
+        kind_names = set(DISCOVER_KIND.values())
+    want = [s.strip() for s in (sources or '').split(',') if s.strip()]
+    if not want:
+        want = [x['key'] for x in DISCOVER_SOURCES]
+    try:
+        limit = max(4, min(32, int(limit or 16)))
+    except Exception:
+        limit = 16
+
+    def run(src):
+        t0 = time.time()
+        if not set(src['kinds']) & kind_names:
+            return src['name'], [], '跳过（与所选类型不匹配）', 0
+        try:
+            rows = _search_one_source(src['key'], q, limit)
+            return src['name'], rows, '', time.time() - t0
+        except Exception as e:
+            return src['name'], [], str(e)[:160], time.time() - t0
+
+    selected = [s for s in DISCOVER_SOURCES if s['key'] in want]
+    status, rows = [], []
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=max(1, min(3, len(selected)))) as ex:
+        futs = [ex.submit(run, s) for s in selected]
+        for f in futs:
+            nm, rs, err, sec = f.result()
+            status.append({'source': nm, 'count': len(rs), 'error': err, 'seconds': round(sec, 1)})
+            rows.extend(rs)
+    seen, uniq = set(), []
+    for r in rows:
+        key = (r.get('url') or '').strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        uniq.append(r)
+    uniq = uniq[:96]
+    return {'ok': True, 'items': uniq, 'status': status, 'q': q, 'total': len(uniq),
+            'note': '只搜公开可访问资源；下载先入隔离区，校验和扫描通过后再入库。'}
+
+
+class _SiteHTML(HTMLParser):
+    """只解析公开网页里的媒体地址和同域链接，不执行脚本、不加载页面资源。"""
+
+    def __init__(self, page_url):
+        super().__init__(convert_charrefs=True)
+        self.page_url = page_url
+        self.title = ''
+        self._in_title = False
+        self.media = []
+        self.links = []
+
+    def handle_starttag(self, tag, attrs):
+        a = {k.lower(): (v or '') for k, v in attrs}
+        if tag == 'title':
+            self._in_title = True
+        if tag == 'meta':
+            prop = (a.get('property') or a.get('name') or '').lower()
+            content = (a.get('content') or '').strip()
+            km = {'og:image': '图片', 'og:video': '视频', 'og:audio': '音频', 'twitter:image': '图片'}
+            if prop in km and content:
+                self.media.append({'url': urljoin(self.page_url, content), 'name': '', 'kind': km[prop]})
+        if tag in ('img', 'video', 'audio', 'source'):
+            src = (a.get('src') or a.get('data-src') or a.get('data-original') or '').strip()
+            if src and not src.startswith(('data:', 'javascript:', 'blob:')):
+                kind = '视频' if tag in ('video', 'source') else ('音频' if tag == 'audio' else '图片')
+                self.media.append({'url': urljoin(self.page_url, src),
+                                   'name': (a.get('alt') or a.get('title') or '').strip(), 'kind': kind})
+            srcset = (a.get('srcset') or a.get('data-srcset') or '').strip()
+            if srcset:
+                first = srcset.split(',')[0].strip().split(' ')[0]
+                if first and not first.startswith(('data:', 'javascript:', 'blob:')):
+                    self.media.append({'url': urljoin(self.page_url, first),
+                                       'name': (a.get('alt') or a.get('title') or '').strip(), 'kind': '图片'})
+        if tag == 'a':
+            href = (a.get('href') or '').strip()
+            if href and not href.startswith(('javascript:', '#', 'mailto:', 'tel:')):
+                self.links.append(urljoin(self.page_url, href))
+
+    def handle_endtag(self, tag):
+        if tag == 'title':
+            self._in_title = False
+
+    def handle_data(self, data):
+        if self._in_title and data.strip():
+            self.title = (self.title + ' ' + data.strip()).strip()[:200]
+
+
+def _kind_from_url(url):
+    ext = os.path.splitext(urlparse(url).path)[1].lower()
+    if ext in DISCOVER_DL_IMAGE:
+        return '图片'
+    if ext in DISCOVER_DL_VIDEO:
+        return '视频'
+    if ext in DISCOVER_DL_AUDIO:
+        return '音频'
+    if ext in DISCOVER_DL_DOC:
+        return '文档'
+    return ''
+
+
+def _site_robots_allowed(base, page_url):
+    try:
+        robots = base.rstrip('/') + '/robots.txt'
+        data, ctype, final, headers = _fetch_remote(robots, timeout=8, limit=512 * 1024,
+                                                    headers={'Accept': 'text/plain,*/*'})
+        text = data.decode('utf-8', 'replace')
+        rp = urllib.robotparser.RobotFileParser()
+        rp.parse(text.splitlines())
+        return rp.can_fetch(DISCOVER_UA, page_url), ''
+    except Exception as e:
+        # robots 取不到时按“允许但限速”处理；真正禁止抓取的站点通常会在页面上挑战或返回 403
+        return True, 'robots.txt 读取失败，按限速抓取：%s' % str(e)[:60]
+
+
+def discover_site(url, q='', kinds='', max_pages=5, max_items=80, allow_private=None):
+    u = (url or '').strip()
+    if not u:
+        return {'ok': False, 'msg': '请输入站点地址', 'items': [], 'pages': 0}
+    try:
+        u = _safe_remote_url(u, allow_private=allow_private)
+    except Exception as e:
+        return {'ok': False, 'msg': str(e), 'items': [], 'pages': 0}
+    q = (q or '').strip()[:80]
+    kind_names = set()
+    for k in (kinds or '').split(','):
+        if k in DISCOVER_KIND:
+            kind_names.add(DISCOVER_KIND[k])
+        elif k in DISCOVER_KIND.values():
+            kind_names.add(k)
+    if not kind_names:
+        kind_names = set(DISCOVER_KIND.values())
+    try:
+        max_pages = max(1, min(10, int(max_pages or 5)))
+        max_items = max(5, min(150, int(max_items or 80)))
+    except Exception:
+        max_pages, max_items = 5, 80
+
+    # 用户直接贴了一张图片/视频/PDF 直链：不再抓页面，直接作为单条结果
+    direct_kind = _kind_from_url(u)
+    if direct_kind:
+        return {'ok': True, 'items': [_card(url=u, name=_basename_from_url(u, direct_kind),
+                                            kind=direct_kind, source='站点嗅探',
+                                            license='未知（需确认授权）', page=u,
+                                            thumb=u if direct_kind == '图片' else '')],
+                'pages': 0, 'title': '', 'note': '这是一个资源直链，可直接下载并校验。'}
+
+    host = urlparse(u).hostname
+    base = '%s://%s' % (urlparse(u).scheme, urlparse(u).netloc)
+    allowed, rwarn = _site_robots_allowed(base, u)
+    if not allowed:
+        return {'ok': False, 'msg': '该站点 robots.txt 禁止抓取这个页面', 'items': [], 'pages': 0,
+                'warnings': [rwarn] if rwarn else []}
+
+    seen_pages, seen_media, items, warnings = set(), set(), [], []
+    queue = [(u, 0)]
+    pages = 0
+    while queue and pages < max_pages and len(items) < max_items:
+        page_url, depth = queue.pop(0)
+        pkey = page_url.split('#')[0]
+        if pkey in seen_pages:
+            continue
+        seen_pages.add(pkey)
+        try:
+            data, ctype, final, headers = _fetch_remote(
+                page_url, timeout=16, limit=DISCOVER_MAX_HTML, headers={'Accept': 'text/html,*/*'})
+            if ctype and not (ctype.startswith('text/html') or ctype.startswith('application/xhtml')):
+                if _kind_from_url(final):
+                    items.append(_card(url=final, name=_basename_from_url(final, '资源'),
+                                       kind=_kind_from_url(final), source='站点嗅探',
+                                       license='未知（需确认授权）', page=final,
+                                       thumb=final if _kind_from_url(final) == '图片' else ''))
+                break
+            parser = _SiteHTML(final)
+            parser.feed(data.decode('utf-8', 'replace'))
+            pages += 1
+            page_title = parser.title or (urlparse(final).hostname or '')
+            media = list(parser.media)
+            for link in parser.links:
+                lk = link.split('#')[0]
+                if _kind_from_url(lk) in DISCOVER_KIND.values():
+                    media.append({'url': lk, 'name': '', 'kind': _kind_from_url(lk)})
+            for m in media:
+                mu = (m.get('url') or '').split('#')[0]
+                if not mu or mu in seen_media:
+                    continue
+                mk = m.get('kind') or _kind_from_url(mu)
+                if mk not in kind_names:
+                    continue
+                nm = (m.get('name') or '').strip() or _basename_from_url(mu, mk)
+                if q and q.lower() not in (mu + ' ' + nm + ' ' + page_title).lower():
+                    continue
+                seen_media.add(mu)
+                items.append(_card(url=mu, name=nm[:120], kind=mk, source='站点嗅探',
+                                   license='未知（个人站点，使用前需作者授权）', page=final,
+                                   thumb=mu if mk == '图片' else '', desc=page_title[:180]))
+                if len(items) >= max_items:
+                    break
+            # 只跟同域、看起来像页面的链接；媒体链接已经在上面收集
+            if depth < 2 and pages < max_pages:
+                for link in parser.links:
+                    lk = link.split('#')[0]
+                    if not lk.startswith(('http://', 'https://')):
+                        continue
+                    lp = urlparse(lk)
+                    if lp.hostname != host or _kind_from_url(lk):
+                        continue
+                    ext = os.path.splitext(lp.path)[1].lower()
+                    if ext and ext not in ('.html', '.htm', '.shtml', '.php', '.asp', '.aspx'):
+                        continue
+                    if lk not in seen_pages and (lk, depth + 1) not in queue:
+                        if len(queue) < max_pages * 3:
+                            queue.append((lk, depth + 1))
+            if queue:
+                time.sleep(0.35)
+        except Exception as e:
+            warnings.append('%s：%s' % (page_url[:80], str(e)[:100]))
+            continue
+
+    if not items:
+        msg = ('该站点前 %d 页没有找到可下载的公开资源' % pages)
+        if q:
+            msg += '，已按关键词「%s」过滤；可试试不带关键词' % q
+        return {'ok': True, 'items': [], 'pages': pages, 'title': '', 'msg': msg,
+                'warnings': warnings[:8], 'note': '站点嗅探只读公开页面，不绕过登录/验证码/防盗链。'}
+    return {'ok': True, 'items': items, 'pages': pages, 'title': '', 'warnings': warnings[:8],
+            'note': '只提取页面里公开的媒体直链；个人站点资源默认有版权，使用前请确认授权。'}
+
+
+# ---------- 受控下载：隔离区 + 魔数校验 + Defender ----------
+
+def _discover_name(name, ctype, url, kind):
+    nm = (name or '').strip()
+    nm = re.sub(r'[\\/:*?"<>|\r\n\t]', '_', nm).strip(' .')
+    if not nm:
+        nm = _basename_from_url(url, DISCOVER_KIND.get(kind, '资源'))
+        nm = re.sub(r'[\\/:*?"<>|\r\n\t]', '_', nm)
+    if len(nm) > 110:
+        stem, ext = os.path.splitext(nm)
+        nm = stem[:100] + ext[:10]
+    ext = os.path.splitext(nm)[1].lower()
+    if ext not in DISCOVER_SAFE_EXT:
+        ext = _discover_ext(ctype, url)
+        if ext:
+            nm = os.path.splitext(nm)[0] + ext
+    return nm
+
+
+def _discover_ext(ctype, url):
+    ctype = (ctype or '').lower()
+    if ctype in DISCOVER_CTYPE_EXT:
+        return DISCOVER_CTYPE_EXT[ctype]
+    ext = os.path.splitext(urlparse(url).path)[1].lower()
+    if ext in DISCOVER_SAFE_EXT:
+        return ext
+    return ''
+
+
+def _discover_magic_ok(ext, head):
+    ext = ext.lower()
+    h = head or b''
+    if ext in DISCOVER_DL_IMAGE:
+        if ext in ('.jpg', '.jpeg'):
+            return h.startswith(b'\xff\xd8\xff')
+        if ext == '.png':
+            return h.startswith(b'\x89PNG\r\n\x1a\n')
+        if ext == '.gif':
+            return h.startswith((b'GIF87a', b'GIF89a'))
+        if ext == '.webp':
+            return h[:4] == b'RIFF' and h[8:12] == b'WEBP'
+        if ext == '.bmp':
+            return h.startswith(b'BM')
+        if ext in ('.tif', '.tiff'):
+            return h.startswith((b'II*\x00', b'MM\x00*'))
+        if ext == '.avif':
+            return b'ftyp' in h[:32] and (b'avif' in h[:64] or b'avis' in h[:64])
+        return False
+    if ext == '.pdf':
+        return h.startswith(b'%PDF-')
+    if ext in ('.ppt', '.doc'):
+        return h.startswith(b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1')
+    if ext in ('.pptx', '.docx', '.xlsx'):
+        return h.startswith(b'PK\x03\x04')
+    if ext in DISCOVER_DL_VIDEO:
+        if ext in ('.mp4', '.m4v', '.mov'):
+            return b'ftyp' in h[:32]
+        if ext in ('.webm', '.mkv'):
+            return h.startswith(b'\x1aE\xdf\xa3')
+        if ext == '.avi':
+            return h[:4] == b'RIFF' and b'AVI' in h[8:16]
+        if ext == '.flv':
+            return h.startswith(b'FLV')
+        return False
+    if ext in DISCOVER_DL_AUDIO:
+        if ext == '.mp3':
+            return h.startswith(b'ID3') or h[:2] in (b'\xff\xfb', b'\xff\xf3', b'\xff\xf2')
+        if ext == '.wav':
+            return h[:4] == b'RIFF' and h[8:12] == b'WAVE'
+        if ext == '.ogg' or ext == '.opus':
+            return h.startswith(b'OggS')
+        if ext == '.flac':
+            return h.startswith(b'fLaC')
+        if ext == '.m4a' or ext == '.aac':
+            return b'ftyp' in h[:32] or h[:2] in (b'\xff\xf1', b'\xff\xf9')
+        return False
+    return False
+
+
+def _defender_scan(path):
+    """调用 Windows Defender 命令行扫描；没装/找不到就返回 unavailable，不假装安全。"""
+    exes = []
+    try:
+        exes += glob.glob(os.path.join(os.environ.get('ProgramData', r'C:\ProgramData'),
+                                       'Microsoft', 'Windows Defender', 'Platform', '*', 'MpCmdRun.exe'))
+    except Exception:
+        pass
+    for p in (r'C:\Program Files\Windows Defender\MpCmdRun.exe',
+              r'C:\Program Files (x86)\Windows Defender\MpCmdRun.exe'):
+        if os.path.exists(p):
+            exes.append(p)
+    if not exes:
+        return 'unavailable', '未找到 Windows Defender 命令行'
+    exe = max(exes, key=lambda p: os.path.getmtime(p))
+    try:
+        p = subprocess.run([exe, '-Scan', '-ScanType', '3', '-File', path, '-DisableRemediation'],
+                           capture_output=True, text=True, timeout=120, creationflags=0x08000000)
+        out = ((p.stdout or '') + (p.stderr or '')).strip()
+        low = out.lower()
+        if p.returncode == 0:
+            return 'clean', out[-200:]
+        if 'product/feature disabled' in low or 'feature disabled' in low:
+            return 'unavailable', 'Windows Defender 功能未启用'
+        if p.returncode == 2 and ('threat' in low or 'found' in low or 'detected' in low
+                                  or '检测到' in out or '威胁' in out):
+            return 'threat', out[-300:]
+        return 'error', ('Defender 返回码 %s：%s' % (p.returncode, out[-200:]))
+    except subprocess.TimeoutExpired:
+        return 'error', 'Defender 扫描超时'
+    except Exception as e:
+        return 'error', str(e)[:160]
+
+
+def _discover_download_worker(token, meta):
+    qdir = os.path.join(DISCOVER_QUAR, token)
+    os.makedirs(qdir, exist_ok=True)
+    part = os.path.join(qdir, 'download.part')
+    try:
+        _discover_job(phase='connecting', msg='正在连接资源地址…', progress=3)
+        url = _safe_remote_url(meta.get('url'))
+        with _open_remote(url, timeout=25, headers={'Accept': '*/*'}) as r:
+            final = r.geturl()
+            _safe_remote_url(final)
+            ctype = (r.headers.get('Content-Type') or '').split(';')[0].strip().lower()
+            length = r.headers.get('Content-Length')
+            if ctype.startswith(('text/', 'application/json', 'application/javascript', 'image/svg')):
+                raise ValueError('目标返回的是网页/脚本，不是资源本体：%s' % ctype)
+            size = 0
+            with open(part, 'wb') as f:
+                while True:
+                    b = r.read(65536)
+                    if not b:
+                        break
+                    size += len(b)
+                    if size > DISCOVER_MAX_DL:
+                        raise ValueError('文件超过 %d MB 上限' % (DISCOVER_MAX_DL // 1048576))
+                    f.write(b)
+                    if length:
+                        try:
+                            pct = min(92, 3 + int(size / max(1, int(length)) * 86))
+                            _discover_job(progress=pct, msg='正在下载 %s / %s' % (
+                                _human_size(size), _human_size(int(length))))
+                        except Exception:
+                            pass
+                    elif size // 1048576:
+                        _discover_job(progress=min(92, 3 + size // (2 * 1048576)),
+                                      msg='正在下载 %s' % _human_size(size))
+        if not os.path.exists(part) or os.path.getsize(part) == 0:
+            raise ValueError('下载为空文件')
+        head = open(part, 'rb').read(64)
+        ext = _discover_ext(ctype, final or url)
+        if not ext:
+            raise ValueError('无法判断文件类型（Content-Type：%s）' % (ctype or '未知'))
+        if not _discover_magic_ok(ext, head):
+            raise ValueError('文件头与扩展名 %s 不符，已拒绝' % ext)
+        name = _discover_name(meta.get('name'), ctype, final or url, meta.get('kind'))
+        if os.path.splitext(name)[1].lower() != ext:
+            name = os.path.splitext(name)[0] + ext
+        size = os.path.getsize(part)
+        sha = hashlib.sha256(open(part, 'rb').read()).hexdigest() if size < 64 * 1024 * 1024 else ''
+        final_path = os.path.join(qdir, name)
+        if os.path.exists(final_path):
+            final_path = _unique_target(qdir, name)
+        os.replace(part, final_path)
+        _discover_job(phase='scanning', progress=94, msg='文件已写入隔离区，正在用 Defender 扫描…')
+        scan, scan_msg = _defender_scan(final_path)
+        if scan == 'threat':
+            try:
+                os.remove(final_path)
+                os.rmdir(qdir)
+            except Exception:
+                pass
+            raise ValueError('Defender 检出威胁，已删除隔离文件：%s' % scan_msg)
+        media = media_of(os.path.splitext(final_path)[1]) or DISCOVER_KIND.get(meta.get('kind'), '文档')
+        result = {'token': token, 'path': final_path, 'name': os.path.basename(final_path),
+                  'size': size, 'ctype': ctype, 'sha256': sha, 'scan': scan,
+                  'scan_msg': scan_msg[:180], 'media': media,
+                  'source': meta.get('source') or '', 'license': meta.get('license') or '',
+                  'page': meta.get('page') or '', 'title': meta.get('title') or meta.get('name') or '',
+                  'url': final}
+        _discover_job(phase='ready', progress=100, running=False,
+                      msg='下载完成，已通过文件头校验' + ('，Defender 未检出威胁' if scan == 'clean' else '，但未执行 Defender 扫描'),
+                      result=result)
+    except Exception as e:
+        try:
+            if os.path.exists(part):
+                os.remove(part)
+            if os.path.isdir(qdir) and not os.listdir(qdir):
+                os.rmdir(qdir)
+        except Exception:
+            pass
+        _discover_job(phase='error', progress=100, running=False, error=str(e)[:240],
+                      msg='下载失败：' + str(e)[:200])
+
+
+def _human_size(n):
+    try:
+        n = float(n)
+    except Exception:
+        return ''
+    if n >= 1048576:
+        return '%.1f MB' % (n / 1048576)
+    return '%.0f KB' % (n / 1024)
+
+
+def start_discover_download(meta):
+    with DISCOVER_LOCK:
+        if DISCOVER_JOB.get('running'):
+            return False, '已有下载任务在跑，请等它结束'
+        token = uuid.uuid4().hex[:16]
+        DISCOVER_JOB.update({'running': True, 'phase': 'starting', 'msg': '准备下载…',
+                             'progress': 0, 'result': None, 'error': '', 'started': time.time()})
+    t = threading.Thread(target=_discover_download_worker, args=(token, dict(meta)), daemon=True)
+    t.start()
+    return True, token
+
+
+def discover_ingest(token):
+    token = (token or '').strip()
+    if not re.match(r'^[0-9a-f]{16}$', token):
+        return {'ok': False, 'msg': '下载凭据无效'}
+    qdir = os.path.realpath(os.path.join(DISCOVER_QUAR, token))
+    root = os.path.realpath(DISCOVER_QUAR)
+    if os.path.commonpath([qdir, root]) != root or not os.path.isdir(qdir):
+        return {'ok': False, 'msg': '隔离目录不存在或已过期'}
+    files = [os.path.join(qdir, f) for f in os.listdir(qdir)
+             if os.path.isfile(os.path.join(qdir, f)) and not f.endswith('.part')]
+    if not files:
+        return {'ok': False, 'msg': '隔离区里没有可入库的文件'}
+    src = files[0]
+    name = os.path.basename(src)
+    media = media_of(os.path.splitext(name)[1])
+    if not media:
+        return {'ok': False, 'msg': '这个文件类型不能入库：' + os.path.splitext(name)[1]}
+    target = _unique_target(DISCOVER_DIR, name)
+    try:
+        shutil.move(src, target)
+        ok = _index_output(target, media)
+        bump_data()
+        try:
+            shutil.rmtree(qdir, ignore_errors=True)
+        except Exception:
+            pass
+        item_id = 0
+        try:
+            con = connect()
+            r = con.execute('SELECT id FROM items WHERE path=?', (target,)).fetchone()
+            con.close()
+            item_id = r[0] if r else 0
+        except Exception:
+            pass
+        return {'ok': True, 'path': target, 'name': os.path.basename(target), 'id': item_id,
+                'indexed': bool(ok), 'media': media, 'msg': '已入库'}
+    except Exception as e:
+        return {'ok': False, 'msg': '入库失败：' + str(e)[:180]}
+
+
+def discover_thumb_path(url):
+    url = (url or '').strip()
+    if not url:
+        raise ValueError('缺少预览地址')
+    os.makedirs(DISCOVER_THUMB, exist_ok=True)
+    p = _thumb_cache(url)
+    if os.path.exists(p):
+        return p
+    data = _make_thumb_bytes(url)
+    with open(p, 'wb') as f:
+        f.write(data)
+    return p
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = 'MediaLib'
+
 
     def log_message(self, fmt, *args):
         pass
@@ -2752,6 +3777,23 @@ class Handler(BaseHTTPRequestHandler):
             self.api_wm_preview(int(m.group(1))); return
         if p == '/api/watermark/remove':
             self.api_watermark_remove(); return
+        if p == '/api/watermark/auto':
+            self.api_watermark_auto(); return
+
+        if p == '/api/discover/sources':
+            self._json(discover_sources()); return
+        if p == '/api/discover/search':
+            self.api_discover_search(q); return
+        if p == '/api/discover/site':
+            self.api_discover_site(); return
+        if p == '/api/discover/thumb':
+            self.api_discover_thumb(q); return
+        if p == '/api/discover/download':
+            self.api_discover_download(); return
+        if p == '/api/discover/status':
+            self._json({'ok': True, 'job': discover_status()}); return
+        if p == '/api/discover/ingest':
+            self.api_discover_ingest(); return
 
         self._send(404, 'not found', 'text/plain; charset=utf-8')
 
@@ -2823,6 +3865,75 @@ class Handler(BaseHTTPRequestHandler):
                         'id': self._lookup_id(target), 'msg': '已生成去水印副本'})
         except Exception as e:
             self._json({'ok': False, 'msg': '去水印失败：' + str(e)[:180]}, 500)
+
+    def api_watermark_auto(self):
+        d = self._json_body or {}
+        try:
+            item_id = int(d.get('id') or 0)
+        except (TypeError, ValueError):
+            item_id = 0
+        if not item_id:
+            self._json({'ok': False, 'msg': '缺少图片'}, 400)
+            return
+        con = connect()
+        row = con.execute('SELECT path, name, ext, media FROM items WHERE id=?', (item_id,)).fetchone()
+        con.close()
+        if not row or row[3] != '图片' or not os.path.exists(row[0]):
+            self._json({'ok': False, 'msg': '这张图片已不在原位'}, 404)
+            return
+        try:
+            target, pixels, boxes = watermark_auto_file(row[0], row[1],
+                                                        d.get('strength') or 3, d.get('radius') or 5)
+            _index_output(target, '图片')
+            bump_data()
+            self._json({'ok': True, 'path': target, 'name': os.path.basename(target),
+                        'id': self._lookup_id(target), 'pixels': pixels, 'regions': boxes,
+                        'msg': '已自动识别 %d 处水印区域并生成副本' % max(1, boxes)})
+        except Exception as e:
+            self._json({'ok': False, 'msg': '一键去水印失败：' + str(e)[:180]}, 500)
+
+    def api_discover_search(self, q):
+        try:
+            r = discover_search((q.get('q') or [''])[0], (q.get('kinds') or [''])[0],
+                                (q.get('sources') or [''])[0], (q.get('limit') or ['16'])[0])
+            self._json(r)
+        except Exception as e:
+            self._json({'ok': False, 'msg': '搜索失败：' + str(e)[:180], 'items': [], 'status': []}, 500)
+
+    def api_discover_site(self):
+        d = self._json_body or {}
+        try:
+            r = discover_site(d.get('url') or '', d.get('q') or '', d.get('kinds') or '',
+                              d.get('max_pages') or 5, d.get('max_items') or 80)
+            self._json(r)
+        except Exception as e:
+            self._json({'ok': False, 'msg': '嗅探失败：' + str(e)[:180], 'items': []}, 500)
+
+    def api_discover_download(self):
+        d = self._json_body or {}
+        if not (d.get('url') or '').strip():
+            self._json({'ok': False, 'msg': '缺少资源地址'}, 400)
+            return
+        meta = {'url': d.get('url'), 'name': d.get('name') or '', 'kind': d.get('kind') or '图片',
+                'source': d.get('source') or '', 'license': d.get('license') or '',
+                'page': d.get('page') or '', 'title': d.get('title') or ''}
+        ok, msg = start_discover_download(meta)
+        self._json({'ok': ok, 'msg': msg, 'token': msg if ok else ''}, 200 if ok else 409)
+
+    def api_discover_ingest(self):
+        d = self._json_body or {}
+        r = discover_ingest(d.get('token') or '')
+        self._json(r, 200 if r.get('ok') else 400)
+
+    def api_discover_thumb(self, q):
+        url = (q.get('url') or [''])[0]
+        try:
+            p = discover_thumb_path(url)
+            with open(p, 'rb') as f:
+                data = f.read()
+            self._send(200, data, 'image/png', {'X-Content-Type-Options': 'nosniff'})
+        except Exception as e:
+            self._send(404, str(e)[:180], 'text/plain; charset=utf-8')
 
     def _lookup_id(self, path):
         try:
